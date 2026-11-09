@@ -124,6 +124,9 @@ internal class XhtmlReader(
     private val frames = ArrayList<Frame>()
     private val sheets = ArrayList<CssSheet>()
 
+    /** How the document's lines run, as its root or body says (see [CssValues.acrossFromVertical]); null when neither says. */
+    private var writingMode: String? = null
+
     /** The html element's font size, which rem lengths are of, and its style attribute. */
     private var rem = base
     private var rootStyle: String? = null
@@ -141,6 +144,9 @@ internal class XhtmlReader(
     private var paraIds = ArrayList<String>()
     private var paraContinued = false
     private var afterSpace = true
+
+    /** Where the paragraph ends in a space made of a line break after a Chinese or Japanese character; -1 when it doesn't. */
+    private var wideBreakAt = -1
 
     /** Space before the next item, the largest of the margins met since the last one (as CSS collapses them). */
     private var space = 0f
@@ -222,7 +228,10 @@ internal class XhtmlReader(
         val node = CssNode(tag, id, classes, parent?.node)
         val inline = p.attr("style")
         if (tag == "html") rootStyle = inline
-        val css = if (sheets.isEmpty() && inline.isNullOrBlank()) emptyMap() else CssSheet.cascade(node, sheets, inline)
+        val cascaded = if (sheets.isEmpty() && inline.isNullOrBlank()) emptyMap() else CssSheet.cascade(node, sheets, inline)
+        // A book written in columns down the page says so on its root or body; its margins are then turned to suit lines across it.
+        if (tag == "html" || tag == "body") CssValues.writingMode(cascaded)?.let { writingMode = it }
+        val css = CssValues.acrossFromVertical(cascaded, writingMode)
         val display = css["display"]?.lowercase()
         // An empty element (a hidden picture, say) has no inside to skip: it is just left out.
         if (tag in SKIPPED || display == "none" || p.attr("hidden") != null) return run { if (tag !in VOID) skip = 1 }
@@ -342,21 +351,24 @@ internal class XhtmlReader(
     }
 
     /**
-     * The html element's font size, read again once the head's style sheets are (it starts before
-     * them): the body's sizes, in rems or not, are of it.
+     * The html element's font size and writing mode, read again once the head's style sheets are (it
+     * starts before them): the body's sizes, in rems or not, are of it, and its margins follow the mode.
      */
     private fun restyleRoot() {
         val i = frames.indexOfFirst { it.node.tag == "html" }
         if (i < 0) return
         val frame = frames[i]
-        val size = CssSheet.cascade(frame.node, sheets, rootStyle)["font-size"]
+        val css = CssSheet.cascade(frame.node, sheets, rootStyle)
+        CssValues.writingMode(css)?.let { writingMode = it }
+        val size = css["font-size"]
         rem = CssValues.rootSize(size, base) ?: return
         CssValues.fontSize(size, base, base)?.let { frames[i] = Frame(frame.node, frame.inherited.copy(size = it), frame.block, frame.end) }
     }
 
     private fun head(tag: String, p: XmlPullParser) {
         when (tag) {
-            "link" -> if (p.attr("rel")?.lowercase()?.split(' ')?.contains("stylesheet") == true) {
+            // An alternate style sheet (a book's horizontal look besides its vertical one, say) is only for readers to pick.
+            "link" -> if (p.attr("rel")?.lowercase()?.split(' ')?.let { "stylesheet" in it && "alternate" !in it } == true) {
                 val target = p.attr("href")?.let { EpubPaths.resolve(path, it) }?.first
                 target?.let(sheet)?.let { if (!it.isEmpty) sheets += it }
             }
@@ -381,8 +393,15 @@ internal class XhtmlReader(
     }
 
     private fun appendText(raw: String, inherited: Inherited) {
+        val sofar = para?.text
+        val before = if (sofar.isNullOrEmpty()) 0 else Character.codePointBefore(sofar, sofar.length)
+        val text = HtmlText.collapse(raw, afterSpace || para == null, before)
+        if (text.isEmpty()) return
+        // A line break that ended the text before, in another element, goes too between Chinese or Japanese characters.
+        if (sofar != null && wideBreakAt == sofar.length - 1 && HtmlText.isWide(text.codePointAt(0))) sofar.delete(wideBreakAt, sofar.length)
         // A paragraph as long as a few pages goes on as a new one, after a space: laying out a huge one is slow.
-        append(HtmlText.collapse(raw, afterSpace || para == null), ' ', inherited)
+        append(text, ' ', inherited)
+        wideBreakAt = if (HtmlText.endsInWideBreak(raw, before)) para?.text?.length?.minus(1) ?: -1 else -1
     }
 
     /**
@@ -414,6 +433,7 @@ internal class XhtmlReader(
     private fun flushPara(continued: Boolean = false) {
         val rich = para ?: return
         para = null
+        wideBreakAt = -1
         val text = rich.text
         var end = text.length
         while (end > 0 && text[end - 1].let { it == ' ' || it == '\n' }) end--

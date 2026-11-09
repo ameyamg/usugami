@@ -249,11 +249,11 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private var saves = 0
     /**
      * The result's copies in Downloads by path, once saved there: saving them again copies only what
-     * has gone. Used in file work only.
+     * has gone. Changed in file work only, and read for the saved state (see [KeptCopies]).
      */
-    private var inDownloads: Pair<List<PdfFile>, MutableMap<String, DownloadsCopy>>? = null
-    /** The result's copies in the folder it was saved to last, by path, the same way. In file work only. */
-    private var inFolder: Triple<List<PdfFile>, Uri, MutableMap<String, Uri>>? = null
+    @Volatile private var inDownloads: Pair<List<PdfFile>, MutableMap<String, DownloadsCopy>>? = null
+    /** The result's copies in the folder it was saved to last, by path, the same way. */
+    @Volatile private var inFolder: Triple<List<PdfFile>, Uri, MutableMap<String, Uri>>? = null
     /**
      * The user put the last result away (Back, Start over, leaving the tool), rather than the system
      * clearing it: a document picked for it afterwards was picked after leaving it (see [notSaved]).
@@ -308,13 +308,22 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private var findJob: Job? = null
     /** Changes when an import starts or is abandoned, so an abandoned one knows to stay quiet. */
     private var importGeneration = 0
+    /**
+     * Changes when a run starts or is abandoned (see [reset]): an abandoned run that is still saving
+     * its PDF leaves what shows to the next tool's run.
+     */
+    private var runGeneration = 0
 
     init {
+        // Android closed Usugami while it made PDFs, which are gone with it (see process).
+        if (handle.remove<Boolean>(KEY_MAKING) == true) message(strings.getString(R.string.msg_making_interrupted))
         val keep = if (restored) inputs.value + locked.value else emptyList()
         val keepDocuments = documents.value
         val keepPictures = history.items.value.filterIsInstance<PictureItem>().map { it.path }
         // The result that was showing when Android stopped Usugami in the background, if any.
         val shown = _result.value
+        if (shown != null) restoreCopies(shown)
+        handle.setSavedStateProvider(KeptCopies.KEY) { packCopies() }
         viewModelScope.launch {
             var resultGone = false
             val (missing, documentsMissing) = withContext(fileOps) {
@@ -465,6 +474,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         // in yet are gone, and the user is told (see takeShareInterrupted).
         handle[KEY_TAKING_SHARED] = generation
         importJob = viewModelScope.launch {
+            val job = coroutineContext[Job]!!
             fun abandoned() = generation != importGeneration
             // The files left out, by name, and why.
             val refused = ArrayList<Pair<String, Said>>()
@@ -477,7 +487,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
                             val input = withContext(fileOps) { engine.adopt(shared.file, id, shared.name) }
                             if (abandoned()) withContext(fileOps) { engine.delete(input) } else append(input)
                         } else {
-                            val input = withContext(fileOps) { office.adopt(shared.file, id, officeKind, shared.name) }
+                            val input = withContext(fileOps) { office.adopt(shared.file, id, officeKind, shared.name) { job.ensureActive() } }
                             if (abandoned()) withContext(fileOps) { office.delete(input) } else setDocuments(documents.value + input)
                         }
                         null
@@ -959,13 +969,15 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         val input = inputs.value.singleOrNull() ?: return
         process(fileName, listOf(input), afterResult = { files ->
             // The engine keeps the original file when re-encoding would not make an unprotected PDF
-            // smaller. Say so, otherwise the result looks like nothing happened.
+            // smaller. Say so, otherwise the result looks like nothing happened. A PDF with a password
+            // can't be kept (no tool's PDF has one), and without it may come out bigger: that is said too.
             val file = files.single()
-            if (input.password.isEmpty() && Compressor.savedPercent(file.originalBytes, file.sizeBytes) == null) {
-                message(strings.getString(R.string.pdf_no_reduction))
-            }
+            if (!madeSmaller(file)) message(strings.getString(if (file.keptOriginal) R.string.pdf_no_reduction else R.string.pdf_not_smaller))
         }) { check -> listOf(engine.compress(input, level, fileName, check)) }
     }
+
+    /** Whether Compress PDF made [file] at least 1% smaller than the PDF it was made of. */
+    private fun madeSmaller(file: PdfFile) = Compressor.savedPercent(file.originalBytes, file.sizeBytes) != null
 
     /**
      * Compresses every PDF, each at its own level ([compressionOf]) into a PDF of its own name
@@ -978,7 +990,16 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
             return
         }
         val jobs = list.map { CompressJob(it, compressionOf(it), outputName(PdfTool.COMPRESS, it)) }
-        processEach("Compressed_PDFs", list.map { it.name }, list) { check, onNext -> engine.compressEach(jobs, check, onNext) }
+        // Those not made smaller and not kept as they were: with a password, as in runCompress. A PDF
+        // kept says so under its name.
+        var notSmaller = emptyList<String>()
+        processEach("Compressed_PDFs", list.map { it.name }, list, afterResult = {
+            if (notSmaller.isNotEmpty()) message(strings.getQuantityString(R.plurals.batch_not_smaller, notSmaller.size, notSmaller.size, notSmaller.joinToString(", ")))
+        }) { check, onNext ->
+            engine.compressEach(jobs, check, onNext).also { outcomes ->
+                notSmaller = outcomes.withIndex().filter { (_, outcome) -> outcome.getOrNull()?.let { !it.keptOriginal && !madeSmaller(it) } == true }.map { list[it.index].name }
+            }
+        }
     }
 
     /** The level [input] is to be compressed at: its own, or the one chosen for all. */
@@ -1615,8 +1636,11 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     ) {
         if (_processing.value || _importing.value) return
         _processing.value = true
+        // In the saved state until the PDFs are made: when Android closes Usugami meanwhile, the user is told.
+        handle[KEY_MAKING] = true
         _convertProgress.value = null
         val document = documents.firstOrNull()
+        val generation = ++runGeneration
         task = viewModelScope.launch {
             try {
                 val job = coroutineContext[Job]!!
@@ -1667,12 +1691,19 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
                 // A PDF nested deeper than PDFBox goes when it copies or saves it.
                 message(strings.getString(if (document != null) R.string.office_convert_failed else R.string.pdf_process_failed))
             } finally {
-                _processing.value = false
-                _convertProgress.value = null
-                _batchProgress.value = null
-                task = null
+                // An abandoned run cleared these when it was abandoned; another may be under way now.
+                if (generation == runGeneration) endRun()
             }
         }
+    }
+
+    /** Nothing is being made any more: the tool can be used, and run again. */
+    private fun endRun() {
+        _processing.value = false
+        _convertProgress.value = null
+        _batchProgress.value = null
+        task = null
+        handle.remove<Boolean>(KEY_MAKING)
     }
 
     fun cancel() { task?.cancel() }
@@ -1726,6 +1757,11 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         importJob?.cancel()
         unlockJob?.cancel()
         task?.cancel()
+        // The abandoned run stops at its next step, or once a save PDFBox can't break off has ended:
+        // the next tool needn't show it as its own meanwhile, and can start a run of its own, which
+        // waits for it with the other file work.
+        runGeneration++
+        endRun()
         // A ZIP file to share is no longer wanted. One being saved where the user chose goes on (images
         // shared meanwhile open the editor, which resets the tool), as a save of the PDFs does: freeing
         // the PDFs below waits for it.
@@ -1878,7 +1914,33 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
 
     /** The copies in Downloads of [files], the result, by path (see [inDownloads]); in file work only. */
     private fun downloadsCopies(files: List<PdfFile>): MutableMap<String, DownloadsCopy> =
-        inDownloads?.takeIf { it.first === files }?.second ?: HashMap<String, DownloadsCopy>().also { inDownloads = files to it }
+        inDownloads?.takeIf { it.first === files }?.second ?: ConcurrentHashMap<String, DownloadsCopy>().also { inDownloads = files to it }
+
+    /** Takes back where [files], the result showing again, were saved before Android stopped Usugami. */
+    private fun restoreCopies(files: List<PdfFile>) {
+        KeptCopies.downloads(handle, files.size)?.let { uris ->
+            val copies = ConcurrentHashMap<String, DownloadsCopy>()
+            files.forEachIndexed { i, file -> uris[i]?.let { copies[file.file.path] = DownloadsCopy(it, file.name) } }
+            inDownloads = files to copies
+        }
+        KeptCopies.folder(handle, files.size)?.let { (tree, uris) ->
+            val copies = ConcurrentHashMap<String, Uri>()
+            files.forEachIndexed { i, file -> uris[i]?.let { copies[file.file.path] = it } }
+            inFolder = Triple(files, tree, copies)
+        }
+    }
+
+    /** Where the result showing was saved, for the saved state (see [KeptCopies]). */
+    private fun packCopies(): Bundle {
+        val files = _result.value ?: return Bundle()
+        val downloads = inDownloads?.takeIf { it.first === files }?.second
+        val folder = inFolder?.takeIf { it.first === files }
+        return KeptCopies.pack(
+            downloads?.let { copies -> files.map { copies[it.file.path]?.uri } },
+            folder?.second,
+            folder?.third?.let { copies -> files.map { copies[it.file.path] } },
+        )
+    }
 
     /**
      * The next document the "Save as" screen makes is for [file], one of the result's PDFs, or for
@@ -1912,7 +1974,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         save {
             // As in saveToDownloads: saving again into that folder copies only what isn't there.
             val copies = inFolder?.takeIf { it.first === files && it.second == tree }?.third
-                ?: HashMap<String, Uri>().also { inFolder = Triple(files, tree, it) }
+                ?: ConcurrentHashMap<String, Uri>().also { inFolder = Triple(files, tree, it) }
             saver.saveToFolder(files.map { it.file }, tree, earlier = files.map { copies[it.file.path] }) { i, copy ->
                 copies[files[i].file.path] = copy
             }
@@ -2040,21 +2102,28 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     /** The name [tool]'s PDF gets unless another is typed, after [input] (by default the first PDF). */
     fun defaultName(tool: PdfTool, input: PdfInput? = inputs.value.firstOrNull()): String {
         val base = input?.name?.let(FileNames::baseName) ?: "Usugami"
+        // A long name is cut, not the ending that tells this PDF from the one it was made from.
+        fun named(suffix: String) = FileNames.withSuffix(base, suffix, "Usugami")
         return when (tool) {
             // A converted document keeps its name: Report.docx becomes Report.pdf.
             PdfTool.WORD, PdfTool.POWERPOINT, PdfTool.EXCEL, PdfTool.EPUB -> documents.value.firstOrNull()?.name?.let(FileNames::baseName) ?: "Usugami"
-            PdfTool.SPLIT -> "${base}_split"
-            PdfTool.COMPRESS -> "${base}_compressed"
+            PdfTool.SPLIT -> {
+                // Each part adds its number and pages after this name: room is left for the longest
+                // ending a PDF of this many pages can give, so a long name is cut here, not its "_split".
+                val last = (input?.pageCount ?: 1).coerceAtLeast(1) - 1
+                FileNames.withSuffix(base, "_split", "Usugami", spare = PdfToolsEngine.partSuffix(last, listOf(last)).length)
+            }
+            PdfTool.COMPRESS -> named("_compressed")
             PdfTool.MERGE -> "Merged_PDF"
-            PdfTool.ROTATE -> "${base}_rotated"
-            PdfTool.PAGE_NUMBERS -> "${base}_numbered"
-            PdfTool.WATERMARK -> "${base}_watermarked"
-            PdfTool.SIGN -> "${base}_signed"
-            PdfTool.DELETE_PAGES -> "${base}_pages_deleted"
-            PdfTool.REORGANIZE -> "${base}_reorganized"
-            PdfTool.FLATTEN -> "${base}_flattened"
-            PdfTool.EDIT -> "${base}_edited"
-            PdfTool.REDACT -> "${base}_redacted"
+            PdfTool.ROTATE -> named("_rotated")
+            PdfTool.PAGE_NUMBERS -> named("_numbered")
+            PdfTool.WATERMARK -> named("_watermarked")
+            PdfTool.SIGN -> named("_signed")
+            PdfTool.DELETE_PAGES -> named("_pages_deleted")
+            PdfTool.REORGANIZE -> named("_reorganized")
+            PdfTool.FLATTEN -> named("_flattened")
+            PdfTool.EDIT -> named("_edited")
+            PdfTool.REDACT -> named("_redacted")
         }
     }
 
@@ -2142,6 +2211,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         const val KEY_RESULT_NAME = "result_name"
         const val KEY_BATCH = "batch"
         const val KEY_TAKING_SHARED = "taking_shared"
+        const val KEY_MAKING = "making"
 
         /** The choice for all PDFs a batch starts with: Compress PDF's Recommended. */
         val DEFAULT_BATCH_CHOICE = PdfCompression.RECOMMENDED.ordinal

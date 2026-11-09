@@ -79,6 +79,21 @@ class EpubFormatsTest {
         assertEquals("", HtmlText.collapse(" \n ", afterSpace = true))
     }
 
+    @Test fun lineBreaksBetweenChineseOrJapaneseCharactersLeaveNoSpace() {
+        assertEquals("引取り手のない死人を、この門へ", HtmlText.collapse("引取り手の\nない死人を、\r\n  この門へ", afterSpace = false))
+        // A space typed between them stays, and a break next to other letters is a space, as in Korean.
+        assertEquals("鴉 は", HtmlText.collapse("鴉 は", afterSpace = false))
+        assertEquals("日本 Japan", HtmlText.collapse("日本\nJapan", afterSpace = false))
+        assertEquals("한국어 문장", HtmlText.collapse("한국어\n문장", afterSpace = false))
+        // Next to an element: a break at the start of its text after such a character, and one at its end.
+        assertEquals("を待って", HtmlText.collapse("\nを待って", afterSpace = false, before = 'み'.code))
+        assertEquals(" Japan", HtmlText.collapse("\nJapan", afterSpace = false, before = 'み'.code))
+        assertTrue(HtmlText.endsInWideBreak("雨やみ\n", before = 0))
+        assertTrue(HtmlText.endsInWideBreak(" \n ", before = 'み'.code))
+        assertFalse(HtmlText.endsInWideBreak("Japan\n", before = 'み'.code))
+        assertFalse(HtmlText.endsInWideBreak("雨やみ ", before = 0))
+    }
+
     @Test fun readsViewportsAndListStyles() {
         assertEquals(1200 to 800, HtmlText.viewport("width=1200, height=800"))
         assertEquals(600 to 900, HtmlText.viewport("height=900;width=600.5"))
@@ -220,5 +235,16 @@ class EpubFormatsTest {
         assertTrue(CssValues.pageBreak("always"))
         assertTrue(CssValues.pageBreak("page"))
         assertFalse(CssValues.pageBreak("avoid"))
+    }
+
+    @Test fun marginsOfVerticalBooksSuitLinesAcrossThePage() {
+        val sheet = SimpleCss.parse("html { -epub-writing-mode: vertical-rl } .main_text { margin-left: 12em } h2 { margin: 2em 3em 0 1em }")
+        val mode = CssValues.writingMode(CssSheet.cascade(CssNode("html", null, emptySet(), null), listOf(sheet), null))
+        assertEquals("vertical-rl", mode)
+        // Space left after the columns (on the left) goes below the text, not beside it.
+        assertEquals(mapOf("margin-bottom" to "12em"), CssValues.acrossFromVertical(mapOf("margin-left" to "12em"), mode))
+        val h2 = CssValues.acrossFromVertical(CssSheet.cascade(CssNode("h2", null, emptySet(), null), listOf(sheet), null), mode)
+        assertEquals(mapOf("margin-left" to "2em", "margin-top" to "3em", "margin-right" to "0", "margin-bottom" to "1em"), h2)
+        assertEquals(mapOf("margin-left" to "12em"), CssValues.acrossFromVertical(mapOf("margin-left" to "12em"), "horizontal-tb"))
     }
 }

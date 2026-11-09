@@ -6,6 +6,7 @@ import com.tom_roush.pdfbox.cos.COSDictionary
 import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.cos.COSObject
 import com.tom_roush.pdfbox.cos.COSStream
+import com.tom_roush.pdfbox.cos.COSString
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
@@ -18,6 +19,7 @@ import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAppearanceStream
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDAcroForm
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDChoice
+import com.tom_roush.pdfbox.pdmodel.interactive.form.PDComboBox
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDField
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDTerminalField
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDTextField
@@ -126,6 +128,7 @@ internal object Flattening {
             // PDFBox redraws a widget's appearance in place, its background and border first, and
             // leaves it like that when it then can't draw the value: what it had is put back.
             val saved = try { field.widgets.map { SavedAppearance(it.cosObject) } } catch (_: IOException) { null }
+            val putBack = (field as? PDComboBox)?.let(::showChoiceText)
             val failed = try {
                 form.refreshAppearances(listOf(field))
                 false
@@ -133,12 +136,48 @@ internal object Flattening {
                 true
             } catch (_: RuntimeException) {
                 true
+            } finally {
+                putBack?.invoke()
             }
             if (!failed) continue
             saved?.forEach { it.restore() }
             if (hasValue(field) && field.widgets.any { shown(it) && (all || !drawable(it)) }) undrawn += field
         }
         return undrawn
+    }
+
+    /**
+     * Puts the text a drop-down list shows for its value in place of the value while PDFBox draws
+     * it. Its choices may each be a value and a text to show (/Opt pairs), such as a country's
+     * code and its name, and PDFBox would draw the code where viewers show the name. Returns what
+     * puts the value back; null when the value is the text shown.
+     */
+    private fun showChoiceText(field: PDComboBox): (() -> Unit)? {
+        val value = field.value.firstOrNull() ?: return null
+        val shown = shownChoice(field, value)
+        if (shown == value) return null
+        val cos = field.cosObject
+        val before = cos.getItem(COSName.V)
+        cos.setString(COSName.V, shown)
+        return { if (before == null) cos.removeItem(COSName.V) else cos.setItem(COSName.V, before) }
+    }
+
+    /**
+     * The text [field]'s list shows for its value [value]: the text its choices pair with it (/Opt),
+     * or itself. Each choice is read as a whole: PDFBox's lists of values and of texts leave out
+     * different choices (a text kept elsewhere in the file, a pair with no text), so they don't line
+     * up, and the same place in them can be another choice's text.
+     */
+    internal fun shownChoice(field: PDChoice, value: String): String {
+        val choices = field.cosObject.getDictionaryObject(COSName.OPT) as? COSArray ?: return value
+        fun COSArray.text(index: Int) = if (index < size()) (getObject(index) as? COSString)?.string else null
+        for (i in 0 until choices.size()) {
+            when (val choice = choices.getObject(i)) {
+                is COSString -> if (choice.string == value) return value
+                is COSArray -> if (choice.text(0) == value) return choice.text(1) ?: value
+            }
+        }
+        return value
     }
 
     private fun hasValue(field: PDTerminalField) = when (field) {

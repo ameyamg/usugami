@@ -4,6 +4,7 @@ import android.graphics.Color
 import io.github.nath_goa.usugami.core.ListNumbering
 import io.github.nath_goa.usugami.core.OfficeColors
 import io.github.nath_goa.usugami.core.SymbolFonts
+import io.github.nath_goa.usugami.core.TabAlign
 import io.github.nath_goa.usugami.core.TabStops
 import java.util.EnumSet
 
@@ -272,8 +273,19 @@ internal data class ParaProps(
                     "tabs" -> {
                         val stops = ArrayList<Float>()
                         val cleared = ArrayList<Float>()
-                        x.children { if (x.name == "tab") x.intAttr("pos")?.let { (if (x.attr("val") == "clear") cleared else stops) += it / 20f } }
-                        p.copy(tabs = TabStops(stops.distinct().sorted(), cleared))
+                        val aligned = HashMap<Float, TabAlign>()
+                        x.children {
+                            if (x.name == "tab") x.intAttr("pos")?.let { pos ->
+                                val at = pos / 20f
+                                when (x.attr("val")) {
+                                    "clear" -> cleared += at
+                                    "right", "end" -> stops += at.also { aligned[it] = TabAlign.RIGHT }
+                                    "center" -> stops += at.also { aligned[it] = TabAlign.CENTER }
+                                    else -> stops += at
+                                }
+                            }
+                        }
+                        p.copy(tabs = TabStops(stops.distinct().sorted(), cleared, aligned))
                     }
                     "rPr" -> p.copy(mark = RunProps.read(x, theme))
                     "sectPr" -> {
@@ -496,6 +508,8 @@ internal class ListLevel(
     val run: RunProps,
     /** What comes between the number and the text: "tab", "space" or "nothing". */
     val suffix: String,
+    /** Word's legal numbering: every level's number in the label is written in arabic, so "I.1" shows as "1.1". */
+    val legal: Boolean = false,
 )
 
 /**
@@ -527,7 +541,10 @@ internal class DocxNumbering private constructor(
         for (above in 0 until at) if (counter[above] < 0) counter[above] = startOf(above)
         if (lvl.format == ListNumbering.Format.BULLET) return SymbolFonts.bullet(lvl.run.font, lvl.text)
         if (lvl.format == ListNumbering.Format.NONE && !lvl.text.contains('%')) return lvl.text
-        val formats = (0..at).map { level(numId, it)?.format ?: ListNumbering.Format.DECIMAL }
+        val formats = (0..at).map { l ->
+            val format = level(numId, l)?.format ?: ListNumbering.Format.DECIMAL
+            if (lvl.legal && format != ListNumbering.Format.NONE) ListNumbering.Format.DECIMAL else format
+        }
         return ListNumbering.wordLabel(lvl.text, counter.copyOf(at + 1), formats)
     }
 
@@ -601,17 +618,19 @@ internal class DocxNumbering private constructor(
             var para = ParaProps()
             var run = RunProps()
             var suffix = "tab"
+            var legal = false
             x.children {
                 when (x.name) {
                     "numFmt" -> format = ListNumbering.wordFormat(x.attr("val"))
                     "lvlText" -> text = x.attr("val").orEmpty()
                     "start" -> start = x.intAttr("val") ?: 1
                     "suff" -> suffix = x.attr("val") ?: "tab"
+                    "isLgl" -> legal = x.flag()
                     "pPr" -> para = ParaProps.read(x, theme)
                     "rPr" -> run = RunProps.read(x, theme)
                 }
             }
-            return level to ListLevel(format, text, start, para, run, suffix)
+            return level to ListLevel(format, text, start, para, run, suffix, legal)
         }
     }
 }

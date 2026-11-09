@@ -11,23 +11,32 @@ import android.os.SystemClock
 import androidx.core.content.FileProvider
 import androidx.lifecycle.SavedStateHandle
 import androidx.test.platform.app.InstrumentationRegistry
+import com.tom_roush.pdfbox.cos.COSArray
+import com.tom_roush.pdfbox.cos.COSBase
 import com.tom_roush.pdfbox.cos.COSDictionary
 import com.tom_roush.pdfbox.cos.COSName
+import com.tom_roush.pdfbox.cos.COSObject
 import com.tom_roush.pdfbox.cos.COSStream
+import com.tom_roush.pdfbox.cos.COSString
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDResources
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.common.PDStream
 import com.tom_roush.pdfbox.pdmodel.documentinterchange.logicalstructure.PDStructureElement
+import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionURI
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDNamedDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
+import com.tom_roush.pdfbox.pdmodel.interactive.form.PDAcroForm
+import com.tom_roush.pdfbox.pdmodel.interactive.form.PDComboBox
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import io.github.nath_goa.usugami.data.Flattening
 import io.github.nath_goa.usugami.data.NothingToFlatten
 import io.github.nath_goa.usugami.data.PdfInput
 import io.github.nath_goa.usugami.data.PdfPageRef
@@ -251,6 +260,43 @@ class PageToolsDeviceTest {
             assertEquals("Part ${index + 1} has page 1's value", index == 0, all.contains("NEAR VALUE"))
             assertEquals("Part ${index + 1} has page 2's value", index == 1, all.contains("FAR VALUE"))
         }
+    }
+
+    /**
+     * Page 1's links to page 3, itself and by name, still work in a part that has both, also after
+     * an earlier part left page 3 out; its link to page 4, left out, leads nowhere. A link to a
+     * damaged name doesn't stop the split.
+     */
+    @Test fun linksBetweenPagesOfAPartStillWork() {
+        val file = made("split_links.pdf")
+        PDDocument.load(chapters(made("split_chapters_links.pdf"))).use { doc ->
+            fun leaf(name: String, value: COSBase) = COSDictionary().apply {
+                setItem(COSName.NAMES, COSArray().apply { add(COSString(name)); add(value) })
+                setItem(COSName.LIMITS, COSArray().apply { add(COSString(name)); add(COSString(name)) })
+            }
+            val names = COSArray().apply {
+                add(leaf("bad", COSString("not a place")))
+                add(leaf("three", PDPageFitDestination().apply { setPage(doc.getPage(2)) }.cosObject))
+            }
+            doc.documentCatalog.cosObject.setItem(COSName.NAMES, COSDictionary().apply { setItem(COSName.DESTS, COSDictionary().apply { setItem(COSName.KIDS, names) }) })
+            val first = doc.getPage(0)
+            first.annotations = first.annotations + listOf("three", "bad").map { name ->
+                PDAnnotationLink().apply {
+                    rectangle = PDRectangle(72f, 520f, 200f, 20f)
+                    destination = PDNamedDestination(name)
+                }
+            }
+            doc.save(file)
+        }
+        val source = import(file)
+        val part = save(engine.split(source, listOf(listOf(0, 1), listOf(0, 2)), "links")[1].file, "split_links.pdf")
+        PDDocument.load(part).use { doc ->
+            val (toThree, toFour, byName) = doc.getPage(0).annotations.filterIsInstance<PDAnnotationLink>().take(3).map { it.destination as PDPageDestination }
+            assertSame("The link leads to page 2 of the part", doc.getPage(1).cosObject, toThree.page?.cosObject)
+            assertNull(toFour.page)
+            assertSame("The link by name leads to page 2 of the part", doc.getPage(1).cosObject, byName.page?.cosObject)
+        }
+        assertFalse(everythingIn(part).contains("PAGE FOUR"))
     }
 
     /**
@@ -714,6 +760,48 @@ class PageToolsDeviceTest {
             assertTrue(form.needAppearances)
             assertEquals(2, doc.getPage(0).annotations.size)
         }
+    }
+
+    /** A drop-down list whose choices pair a code with a name shows the name, as viewers do, not the code it keeps or another choice's name. */
+    @Test fun aDropDownShowsTheNameOfItsChoice() {
+        val file = made("country_form.pdf")
+        PDDocument().use { doc ->
+            val page = PDPage(PDRectangle.A4).also(doc::addPage)
+            val form = PDAcroForm(doc).also { doc.documentCatalog.acroForm = it }
+            form.defaultResources = PDResources().apply { put(COSName.getPDFName("Helv"), PDType1Font.HELVETICA) }
+            form.needAppearances = true
+            val country = PDComboBox(form).apply {
+                partialName = "country"
+                defaultAppearance = "/Helv 12 Tf 0 g"
+                cosObject.setItem(COSName.OPT, COSArray().apply {
+                    // A name kept elsewhere in the file, and a choice with no name, before the one chosen.
+                    add(COSArray().apply {
+                        add(COSString("code-at"))
+                        add(COSObject(COSString("Austria")))
+                    })
+                    add(COSArray().apply { add(COSString("code-be")) })
+                    for ((code, name) in listOf("code-pt" to "Portugal", "code-es" to "Spain")) add(COSArray().apply {
+                        add(COSString(code))
+                        add(COSString(name))
+                    })
+                })
+                cosObject.setString(COSName.V, "code-pt")
+            }
+            // Saving writes the name kept elsewhere into the list itself, so that one is checked here.
+            assertEquals("Austria", Flattening.shownChoice(country, "code-at"))
+            assertEquals("code-be", Flattening.shownChoice(country, "code-be"))
+            val widget = country.widgets.single().apply {
+                rectangle = PDRectangle(72f, 600f, 200f, 24f)
+                this.page = page
+                isPrinted = true
+            }
+            form.fields.add(country)
+            page.annotations = listOf(widget)
+            doc.save(file)
+        }
+        val flat = save(engine.flatten(import(file), "country_flattened").file.file, "country_flattened.pdf")
+        val content = text(flat)
+        assertTrue("The choice's name is part of the page: $content", content.contains("Portugal") && !content.contains("code-pt") && !content.contains("Spain"))
     }
 
     /**

@@ -4,10 +4,10 @@ import android.os.Build
 import android.util.Xml
 import dalvik.system.ZipPathValidator
 import io.github.nath_goa.usugami.core.OfficeUnits
+import io.github.nath_goa.usugami.core.XmlTokenGuard
 import org.xmlpull.v1.XmlPullParser
 import java.io.Closeable
 import java.io.File
-import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.util.zip.ZipEntry
@@ -39,9 +39,10 @@ private val rootedNamesAllowed: Unit by lazy {
 
 /**
  * An Office Open XML file (.docx, .pptx, .xlsx): a zip of XML parts, linked by relationships. Only read,
- * never extracted, so odd names inside the zip can't reach the file system.
+ * never extracted, so odd names inside the zip can't reach the file system. [check] is called as the
+ * relationships are read, and throws to stop: a crafted file can make them take a while.
  */
-internal class OfficePackage(file: File) : Closeable {
+internal class OfficePackage(file: File, private val check: () -> Unit) : Closeable {
     private val zip = openZip(file)
     // Part names are case-insensitive in OOXML, but zip entry names aren't.
     private val entries: Map<String, ZipEntry> = zip.entries().asSequence().associateBy { it.name.trimStart('/').lowercase() }
@@ -67,7 +68,7 @@ internal class OfficePackage(file: File) : Closeable {
         val dir = part.substringBeforeLast('/', "")
         val relsPath = (if (dir.isEmpty()) "" else "$dir/") + "_rels/" + part.substringAfterLast('/') + ".rels"
         val found = HashMap<String, Relationship>()
-        xml(relsPath) {}?.use { x ->
+        xml(relsPath, check)?.use { x ->
             x.children {
                 if (x.name == "Relationship") {
                     val id = x.attr("Id")
@@ -146,8 +147,6 @@ internal enum class Ns { WORD, DRAWING, SLIDE, WORD_DRAWING, PICTURE, COMPATIBIL
  * namespaces are understood.
  */
 internal class OfficeXml private constructor(private val parser: XmlPullParser, private val input: InputStream, private val check: () -> Unit) : Closeable {
-    private var events = 0
-
     val name: String get() = parser.name
     val ns: Ns get() = namespaceOf(parser.namespace)
     val depth: Int get() = parser.depth
@@ -252,8 +251,9 @@ internal class OfficeXml private constructor(private val parser: XmlPullParser, 
     }
 
     private fun next(): Int {
-        // Checked now and then: a large part can take a while to read.
-        if (++events % 512 == 0) check()
+        // Checked at each element and text: a large part takes a while to read, and so can one element
+        // of a crafted part, even within what XmlTokenGuard lets through.
+        check()
         val event = parser.next()
         // The platform's parser takes longer over each level than over the one before, so a part nested
         // far deeper than [MAX_DEPTH], which only a crafted file is, is refused rather than skipped.
@@ -273,7 +273,7 @@ internal class OfficeXml private constructor(private val parser: XmlPullParser, 
         fun open(input: InputStream, check: () -> Unit): OfficeXml {
             val parser = Xml.newPullParser()
             parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
-            parser.setInput(TokenGuard(input), null)
+            parser.setInput(XmlTokenGuard(input), null)
             // Office never writes a DOCTYPE. One could declare entities that expand without end, so
             // the file is refused before anything in it is read.
             while (true) {
@@ -304,80 +304,5 @@ internal class OfficeXml private constructor(private val parser: XmlPullParser, 
                 }
             }
         }
-    }
-}
-
-/**
- * A part's bytes on their way to the XML parser, which keeps each tag and each run of text between
- * tags whole in memory, and takes longer for each attribute a tag has than for the one before. A tag
- * or text longer than [MAX_RUN] bytes, or a tag with more than [MAX_ATTRIBUTES] attributes, which only
- * a crafted file has, fails the part as damaged before the parser runs out of memory or time on it.
- * A part in UTF-16, which Office doesn't write, is let through as it is.
- */
-private class TokenGuard(input: InputStream) : FilterInputStream(input) {
-    private var sniffed = 0
-    private var first = 0
-    private var utf16 = false
-    private var run = 0
-    private var inTag = false
-    private var afterOpening = false
-    /** In a comment, CDATA or declaration, where quotes and = aren't counted. */
-    private var special = false
-    private var quote = 0
-    private var attributes = 0
-
-    override fun read(): Int = super.read().also { if (it >= 0) see(it) }
-
-    override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { n ->
-        for (i in off until off + n) see(b[i].toInt() and 0xFF)
-    }
-
-    private fun see(byte: Int) {
-        if (sniffed < 2) {
-            // A byte order mark, or a < with a zero byte beside it.
-            if (sniffed == 0) first = byte else utf16 = (first == 0xFE && byte == 0xFF) || (first == 0xFF && byte == 0xFE) || first == 0 || byte == 0
-            sniffed++
-        }
-        if (utf16) return
-        if (++run > MAX_RUN) throw IOException("Office part with a tag or text too long to read")
-        if (!inTag) {
-            if (byte == LT) {
-                inTag = true
-                afterOpening = true
-                quote = 0
-                attributes = 0
-                run = 0
-            } else if (byte == GT) {
-                run = 0
-            }
-            return
-        }
-        if (afterOpening) {
-            afterOpening = false
-            special = byte == BANG || byte == QUESTION
-        }
-        when {
-            quote != 0 -> if (byte == quote) quote = 0
-            byte == GT -> {
-                inTag = false
-                run = 0
-            }
-            special -> Unit
-            byte == DOUBLE_QUOTE || byte == SINGLE_QUOTE -> quote = byte
-            byte == EQUALS -> if (++attributes > MAX_ATTRIBUTES) throw IOException("Office part with too many attributes in a tag")
-        }
-    }
-
-    private companion object {
-        /** Far longer than any text or tag Office writes: a cell holds 32,767 characters at most. */
-        const val MAX_RUN = 8 * 1024 * 1024
-        const val MAX_ATTRIBUTES = 4096
-        const val LT = '<'.code
-        const val GT = '>'.code
-        const val BANG = '!'.code
-        const val QUESTION = '?'.code
-        const val DOUBLE_QUOTE = '"'.code
-        const val SINGLE_QUOTE = '\''.code
-        const val EQUALS = '='.code
     }
 }

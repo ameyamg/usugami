@@ -587,6 +587,41 @@ class OfficeConverterDeviceTest {
         assertTrue(texts[4].contains("Chapter two"))
     }
 
+    @Test fun wordEvenPagesHaveTheirOwnHeaders() {
+        fun header(text: String) = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr $WORD_NAMESPACES>${para(text)}</w:hdr>"""
+        val pageBreak = """<w:p><w:r><w:br w:type="page"/></w:r></w:p>"""
+        val body = para("One") + pageBreak + para("Two") + pageBreak + para("Three") +
+            """<w:sectPr><w:headerReference w:type="default" r:id="rId4"/><w:headerReference w:type="even" r:id="rId5"/></w:sectPr>"""
+        val pdf = convert(
+            wordDocument(
+                body, "even-odd.docx", rels = listOf("header" to "header1.xml", "header" to "header2.xml", "settings" to "settings.xml"),
+                parts = mapOf(
+                    "word/header1.xml" to header("Right-hand header"),
+                    "word/header2.xml" to header("Left-hand header"),
+                    "word/settings.xml" to """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="$W"><w:evenAndOddHeaders/></w:settings>""",
+                ),
+            ),
+            OfficeKind.WORD, "word-even-odd-headers",
+        )
+        assertEquals(listOf("Right", "Left", "Right"), pageTexts(pdf).map { Regex("""(\S+)-hand header""").find(it)?.groupValues?.get(1) })
+    }
+
+    @Test fun wordRightAndCentreTabStopsPlaceTheTextAfterThem() {
+        // Word's Header style: a centre stop in the middle of the text and a right stop at its right
+        // margin. Stops count from the margin, so a first line indented as in many styles changes nothing.
+        val tabs = """<w:tabs><w:tab w:val="center" w:pos="4680"/><w:tab w:val="right" w:pos="9360"/></w:tabs>"""
+        for (indent in listOf("", """<w:ind w:firstLine="720"/>""")) {
+            val header = """<w:p><w:pPr>$tabs$indent</w:pPr><w:r><w:t>Report</w:t><w:tab/><w:t>Middle</w:t><w:tab/><w:t xml:space="preserve">Page 1</w:t></w:r></w:p>"""
+            val pdf = convert(wordDocument(header, "tabs.docx"), OfficeKind.WORD, "word-tab-stops")
+            val all = glyphs(pdf, 1)
+            assertEquals("All on one line", 1, all.map { it.yDirAdj.toInt() }.distinct().size)
+            val at = all.joinToString("") { it.unicode }.indexOf("Middle")
+            val middle = all.subList(at, at + 6)
+            near(72f + 234f, (middle.first().xDirAdj + middle.last().xDirAdj + middle.last().widthDirAdj) / 2, 2f)
+            near(72f + 468f, all.last().xDirAdj + all.last().widthDirAdj, 2f)
+        }
+    }
+
     @Test fun wordPageNumbersInTheTextAreTheirOwnPages() {
         val field = """<w:fldSimple w:instr=" PAGE "><w:r><w:t>9</w:t></w:r></w:fldSimple>"""
         val body = """<w:p><w:r><w:t xml:space="preserve">Opening page </w:t></w:r>$field</w:p><w:p><w:pPr><w:sectPr/></w:pPr></w:p>""" +
@@ -646,6 +681,19 @@ class OfficeConverterDeviceTest {
         assertTrue(text, Regex("""2\.\s*Second clause""").containsMatchIn(text))
         // The text at the level's indent: half an inch in from the margin.
         near(72f + 36f, word(pdf, 1, "First").xDirAdj)
+    }
+
+    @Test fun wordLegalNumberingWritesEveryLevelInArabic() {
+        // Contracts number articles in roman and their sections in legal style: Section 1.1, not I.1.
+        val numbering = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="$W">
+            <w:abstractNum w:abstractNumId="0">
+              <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="upperRoman"/><w:lvlText w:val="Article %1"/><w:suff w:val="space"/></w:lvl>
+              <w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:isLgl/><w:lvlText w:val="Section %1.%2"/><w:suff w:val="space"/></w:lvl></w:abstractNum>
+            <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+            </w:numbering>"""
+        val body = listItem("Terms", 1, 0) + listItem("Scope", 1, 1) + listItem("Payment", 1, 0) + listItem("Fees", 1, 1)
+        val text = pageTexts(convert(wordDocument(body, "legal.docx", numbering = numbering), OfficeKind.WORD, "word-legal-numbering"))[0]
+        assertTrue(text, text.contains("Article I Terms Section 1.1 Scope Article II Payment Section 2.1 Fees"))
     }
 
     @Test fun wordAutomaticTextIsWhiteOnDarkShading() {
@@ -1007,9 +1055,11 @@ class OfficeConverterDeviceTest {
         )
         // At the bottom of their boxes, with and without space before: a first paragraph's doesn't count.
         val bottom = """<a:bodyPr anchor="b" tIns="0" bIns="0"/>"""
+        // As PowerPoint writes most text bodies: with what to do when the text overflows inside.
+        val bottomWithAutofit = """<a:bodyPr anchor="b" tIns="0" bIns="0"><a:normAutofit/></a:bodyPr>"""
         val anchored = slide(
             box(2, 40, 100, bottom, """<a:p><a:pPr><a:spcBef><a:spcPts val="2000"/></a:spcBef></a:pPr>${run("Alpha", 20)}</a:p>""") +
-                box(3, 380, 100, bottom, "<a:p>${run("Beta", 20)}</a:p>"),
+                box(3, 380, 100, bottomWithAutofit, "<a:p>${run("Beta", 20)}</a:p>"),
         )
         val pdf = convert(deck("text.pptx", listOf(directions, symbols, anchored)), OfficeKind.POWERPOINT, "slide-text")
         val (rtl, ltr) = glyphs(pdf, 1).filter { g -> g.unicode.any { it in 'א'..'ת' } }.partition { it.xDirAdj < 360f }
@@ -1025,6 +1075,23 @@ class OfficeConverterDeviceTest {
         for (x in 0 until 60) for (y in 0 until 25) if (isColor(links, scale, link.xDirAdj + x, link.yDirAdj - y, 0xFF0563C1.toInt())) blue++
         assertTrue("The link in the theme's link colour", blue > 20)
         near(word(pdf, 3, "Beta").yDirAdj, word(pdf, 3, "Alpha").yDirAdj)
+    }
+
+    @Test fun powerPointVerticalTextKeepsJapaneseUprightAndTurnsLatinLetters() {
+        // Insert > Text Box > Vertical, as PowerPoint writes it: a narrow box that grows with its text.
+        val vertical = """<a:bodyPr vert="eaVert" wrap="none"><a:spAutoFit/></a:bodyPr>"""
+        val rect = """<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>"""
+        val japanese = """<a:p><a:r><a:rPr lang="ja-JP" sz="2000"/><a:t>縦書き</a:t></a:r></a:p>"""
+        val pdf = convert(
+            deck("vertical.pptx", listOf(slide(sp(2, xfrm(40, 40, 30, 200) + rect, japanese, vertical) + sp(3, xfrm(200, 40, 30, 200) + rect, "<a:p>${run("Sideways", 20)}</a:p>", vertical)))),
+            OfficeKind.POWERPOINT, "slide-vertical",
+        )
+        val (upright, turned) = glyphs(pdf, 1).partition { it.dir == 0f }
+        assertEquals("縦書き", upright.joinToString("") { it.unicode })
+        assertEquals("One under the other", 3, upright.map { it.yDirAdj.toInt() }.distinct().size)
+        // Read down the page: turned a quarter clockwise.
+        assertEquals("Sideways", turned.joinToString("") { it.unicode })
+        assertTrue(turned.map { it.dir }.toString(), turned.all { it.dir == 270f })
     }
 
     @Test fun powerPointTableStylesAndMergedCells() {

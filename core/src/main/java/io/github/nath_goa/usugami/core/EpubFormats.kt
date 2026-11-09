@@ -168,22 +168,75 @@ object XmlPrefix {
 object HtmlText {
     /**
      * [text] with each run of white space as one space, and leading white space dropped when the
-     * text so far ends in a space ([afterSpace]). No-break spaces stay.
+     * text so far ends in a space ([afterSpace]). No-break spaces stay. A line break between two
+     * Chinese or Japanese characters goes, as CSS has it: those languages don't put spaces between
+     * words, and their books often break a paragraph's lines in the file. [before] is the character
+     * the text so far ends in (0 for none), for a break at the start of [text], as after an end tag.
      */
-    fun collapse(text: String, afterSpace: Boolean): String {
+    fun collapse(text: String, afterSpace: Boolean, before: Int = 0): String {
         val out = StringBuilder(text.length)
         var space = afterSpace
-        for (c in text) {
-            if (c == ' ' || c == '\n' || c == '\t' || c == '\r' || c == '\u000C') {
+        var i = 0
+        while (i < text.length) {
+            if (!isSpace(text[i])) {
+                out.append(text[i++])
+                space = false
+                continue
+            }
+            val start = i
+            var lineBreak = false
+            while (i < text.length && isSpace(text[i])) {
+                if (text[i] == '\n' || text[i] == '\r') lineBreak = true
+                i++
+            }
+            val previous = if (start > 0) text.codePointBefore(start) else before
+            val joined = lineBreak && i < text.length && isWide(previous) && isWide(text.codePointAt(i))
+            if (!joined) {
                 if (!space) out.append(' ')
                 space = true
-            } else {
-                out.append(c)
-                space = false
             }
         }
         return out.toString()
     }
+
+    /**
+     * Whether [text] ends in a line break after a Chinese or Japanese character ([before] when it's
+     * all white space). [collapse] can't see the text after it, so makes a space of it: one that
+     * goes if the text after it, in the next element, starts with such a character.
+     */
+    fun endsInWideBreak(text: String, before: Int): Boolean {
+        var i = text.length
+        var lineBreak = false
+        while (i > 0 && isSpace(text[i - 1])) {
+            if (text[i - 1] == '\n' || text[i - 1] == '\r') lineBreak = true
+            i--
+        }
+        return lineBreak && isWide(if (i > 0) text.codePointBefore(i) else before)
+    }
+
+    private fun isSpace(c: Char) = c == ' ' || c == '\n' || c == '\t' || c == '\r' || c == '\u000C'
+
+    /** Whether [code] is a wide Chinese or Japanese character or punctuation mark (Korean is written with spaces). */
+    fun isWide(code: Int): Boolean {
+        val script = Character.UnicodeScript.of(code)
+        if (script == Character.UnicodeScript.HANGUL) return false
+        if (script == Character.UnicodeScript.HAN || script == Character.UnicodeScript.HIRAGANA ||
+            script == Character.UnicodeScript.KATAKANA || script == Character.UnicodeScript.BOPOMOFO
+        ) {
+            return true
+        }
+        return Character.UnicodeBlock.of(code) in WIDE_BLOCKS
+    }
+
+    /** Blocks of wide punctuation and marks that Chinese and Japanese share, such as 。 and ー. */
+    private val WIDE_BLOCKS = setOf(
+        Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION,
+        Character.UnicodeBlock.HIRAGANA,
+        Character.UnicodeBlock.KATAKANA,
+        Character.UnicodeBlock.CJK_COMPATIBILITY_FORMS,
+        Character.UnicodeBlock.VERTICAL_FORMS,
+        Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS,
+    )
 
     /** A fixed-layout page's size from its viewport, such as "width=1200, height=1600". */
     fun viewport(content: String?): Pair<Int, Int>? {
@@ -535,6 +588,33 @@ object CssValues {
 
     /** Whether a page-break-before/after or break-before/after value asks for a new page. */
     fun pageBreak(value: String?): Boolean = value?.trim()?.lowercase() in setOf("always", "page", "left", "right", "recto", "verso")
+
+    /** The writing mode [css] sets, under any of the names books give it, such as "vertical-rl"; null when it sets none. */
+    fun writingMode(css: Map<String, String>): String? =
+        (css["writing-mode"] ?: css["-epub-writing-mode"] ?: css["-webkit-writing-mode"])?.trim()?.lowercase()
+
+    /**
+     * [css] written for lines running down the page in [mode] (as Japanese and Chinese books often
+     * are), for lines running across it, as Usugami lays every book out: the margins before and after
+     * the lines (right and left, the other way round from the left) become those above and below them,
+     * and those at their start and end (top and bottom) those on the left and right. Other modes'
+     * CSS is left as it is.
+     */
+    fun acrossFromVertical(css: Map<String, String>, mode: String?): Map<String, String> {
+        val fromRight = when (mode) {
+            "vertical-rl", "tb-rl", "tb" -> true
+            "vertical-lr", "tb-lr" -> false
+            else -> return css
+        }
+        if (css.keys.none { it.startsWith("margin-") }) return css
+        val out = HashMap(css)
+        listOf("top", "right", "bottom", "left").forEach { out.remove("margin-$it") }
+        css["margin-top"]?.let { out["margin-left"] = it }
+        css["margin-bottom"]?.let { out["margin-right"] = it }
+        css[if (fromRight) "margin-right" else "margin-left"]?.let { out["margin-top"] = it }
+        css[if (fromRight) "margin-left" else "margin-right"]?.let { out["margin-bottom"] = it }
+        return out
+    }
 
     private const val MAX_LENGTH = 64
 }

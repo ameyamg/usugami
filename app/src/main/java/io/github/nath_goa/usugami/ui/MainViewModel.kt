@@ -304,10 +304,14 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     private var saves = 0
     /** Saves of the PDFs go one at a time, in the order they were asked for. */
     private val saveTurn = Mutex()
-    /** The result's copies in Downloads, once it has been saved there: saving it again copies only what has gone. */
-    private var inDownloads: Pair<List<PdfFile>, MutableList<DownloadsCopy?>>? = null
+    /**
+     * The result's copies in Downloads, once it has been saved there: saving it again copies only what
+     * has gone. Set while saving, and read for the saved state (see [KeptCopies]): a copy's place is
+     * only ever filled in, so a read sees each copy made or not yet.
+     */
+    @Volatile private var inDownloads: Pair<List<PdfFile>, MutableList<DownloadsCopy?>>? = null
     /** The result's copies in the folder it was saved to last, the same way. */
-    private var inFolder: Triple<List<PdfFile>, Uri, MutableList<Uri?>>? = null
+    @Volatile private var inFolder: Triple<List<PdfFile>, Uri, MutableList<Uri?>>? = null
     /**
      * The user put the last result away (Back, Start over, images shared), rather than the system
      * clearing it: a document picked for it afterwards was picked after leaving it (see [notSaved]).
@@ -399,6 +403,8 @@ class MainViewModel(private val app: Application, private val handle: SavedState
 
     init {
         if ((handle.remove<Int>(KEY_PICKS_UNDER_WAY) ?: 0) > 0) message(R.string.msg_picks_interrupted)
+        // Android closed Usugami while it made a PDF, which is gone with it (see convert).
+        if (handle.remove<Boolean>(KEY_MAKING) == true) message(R.string.msg_making_interrupted)
         handle.setSavedStateProvider(KEY_ITEMS) {
             packItems(_items.value).also {
                 photosInSavedState.clear()
@@ -427,6 +433,8 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         }
         // The result that was showing when Android stopped Usugami in the background, if any.
         val shown = _result.value
+        if (shown != null) restoreCopies(shown)
+        handle.setSavedStateProvider(KeptCopies.KEY) { packCopies() }
         // Read here: photoTaken() forgets it once the camera app is back, which may be before the
         // cleanup below runs, and the photo would be deleted.
         val keepCapture = capture
@@ -566,13 +574,21 @@ class MainViewModel(private val app: Application, private val handle: SavedState
             } finally {
                 // Nothing to report about images the user has discarded.
                 if (generation == importGeneration) {
-                    if (unsupported > 0) pluralMessage(R.plurals.msg_skipped_unsupported, unsupported)
+                    if (unsupported > 0) pluralMessage(unsupportedMessage, unsupported)
                     if (failed > 0) pluralMessage(R.plurals.msg_failed_import, failed)
                     if (noSpace > 0) pluralMessage(R.plurals.msg_import_no_space, noSpace)
                 }
             }
         }
     }
+
+    /** The message for images skipped as of a type Usugami can't read, naming those this Android version reads. */
+    private val unsupportedMessage: Int
+        get() = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> R.plurals.msg_skipped_unsupported
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.P -> R.plurals.msg_skipped_unsupported_no_avif
+            else -> R.plurals.msg_skipped_unsupported_no_heic
+        }
 
     /**
      * [item], just added from batch [batch], with the look and adjustments Apply to all pages gave
@@ -1225,6 +1241,9 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         val language = ocrLanguage?.takeIf { engine != null }
         val snapshot = items.value
         if (snapshot.isEmpty() || _progress.value != null || _pendingImports.value > 0) return
+        // Not while a page's crop screen shows or is opening, as it does for a photo just taken: the
+        // page would go into the PDF uncropped, and closing that screen later would remove it.
+        if (_crop.value != null || _openingCrop.value) return
         if (snapshot.size > 1) {
             _merge.value = merge
             settingsStore.merge = merge
@@ -1234,6 +1253,8 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         lastChoices = ConvertChoices(fileName, language)
         val layout = _layout.value
         _progress.value = Progress(0, snapshot.size)
+        // In the saved state until the PDF is made: when Android closes Usugami meanwhile, the user is told.
+        handle[KEY_MAKING] = true
         conversion = viewModelScope.launch {
             // The pages as their files are now (see takeIn).
             var pages = snapshot
@@ -1288,6 +1309,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                 _progress.value = null
                 _cancelling.value = false
                 conversion = null
+                handle.remove<Boolean>(KEY_MAKING)
             }
         }
     }
@@ -1421,6 +1443,23 @@ class MainViewModel(private val app: Application, private val handle: SavedState
             saver.saveTo(file.file, uri)
             strings.getString(R.string.msg_saved)
         }
+    }
+
+    /** Takes back where [files], the result showing again, were saved before Android stopped Usugami. */
+    private fun restoreCopies(files: List<PdfFile>) {
+        KeptCopies.downloads(handle, files.size)?.let { uris ->
+            inDownloads = files to uris.mapIndexedTo(ArrayList()) { i, uri -> uri?.let { DownloadsCopy(it, files[i].name) } }
+        }
+        KeptCopies.folder(handle, files.size)?.let { (tree, uris) -> inFolder = Triple(files, tree, uris.toMutableList()) }
+    }
+
+    /** Where the result showing was saved, for the saved state (see [KeptCopies]). */
+    @VisibleForTesting
+    internal fun packCopies(): Bundle {
+        val files = _result.value
+        val downloads = inDownloads?.takeIf { it.first === files }?.second
+        val folder = inFolder?.takeIf { it.first === files }
+        return KeptCopies.pack(downloads?.map { it?.uri }, folder?.second, folder?.third?.toList())
     }
 
     /** Saves every result into a folder picked with the system folder picker. */
@@ -1559,6 +1598,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         private const val KEY_PENDING_CROPS = "pending_crops"
         private const val KEY_PENDING_PHOTOS = "pending_photos"
         private const val KEY_SCAN = "scan"
+        private const val KEY_MAKING = "making"
 
         /**
          * [list] for the saved state, in a few bytes per image: a list of [ImageItem]s took hundreds,

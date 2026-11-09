@@ -47,6 +47,7 @@ import io.github.nath_goa.usugami.core.ZipArchive
 import io.github.nath_goa.usugami.data.AppLanguage
 import io.github.nath_goa.usugami.data.AppLanguages
 import io.github.nath_goa.usugami.data.Appearance
+import io.github.nath_goa.usugami.data.ImageStore
 import io.github.nath_goa.usugami.data.LegalDocument
 import io.github.nath_goa.usugami.data.PdfSaver
 import io.github.nath_goa.usugami.data.RecentFiles
@@ -338,6 +339,18 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     // Counts the tools opened from Home. Each opening is a screen of its own, with choices of its own,
     // also when a tool is opened again while its last screen is still sliding away.
     var toolOpening by rememberSaveable { mutableIntStateOf(0) }
+    // What the crop screen chose for its page (the corners moved, the step, the look) is kept while
+    // files shared to Usugami open their tool over it, so Back returns to the page as it was left.
+    val cropStates = rememberSaveableStateHolder()
+    // Counts the times the crop screen opened. Each is a screen of its own, whose choices are
+    // forgotten once its pages are done with.
+    var cropOpening by rememberSaveable { mutableIntStateOf(0) }
+    LaunchedEffect(crop == null && scan == null) {
+        if (crop == null && scan == null) {
+            cropStates.removeState(cropOpening)
+            cropOpening++
+        }
+    }
 
     /** Opens [target] for files shared to Usugami. What showed goes, as when a tool is opened from Home. */
     fun openForShare(target: String) {
@@ -448,7 +461,14 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     val receivingFor = sharedRoute(SharedFiles.chosen(sharedFiles.map { it.kind }) ?: sharing)
 
     AnimatedContent(
-        targetState = Shown(screen, if (isPdfToolRoute(route)) toolOpening else 0),
+        targetState = Shown(
+            screen,
+            when {
+                isPdfToolRoute(route) -> toolOpening
+                screen == "images/crop" -> cropOpening
+                else -> 0
+            },
+        ),
         transitionSpec = { Motion.screenTransition(forward = screenDepth(targetState.screen) >= screenDepth(initialState.screen)) },
         label = "screen",
     ) { shown ->
@@ -590,7 +610,7 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                                     photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                                 }
                             },
-                            addFromFiles = { launch(R.string.msg_no_picker) { filePicker.launch(arrayOf("image/jpeg", "image/png")) } },
+                            addFromFiles = { launch(R.string.msg_no_picker) { filePicker.launch(ImageStore.pickableTypes) } },
                             takePhoto = ::takePhoto,
                             changeLayout = vm::setLayout,
                             rotate = vm::rotate,
@@ -601,8 +621,10 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                             sort = vm::sort,
                             clearAll = vm::clearAll,
                             // Not while a PDF is being made: a tap that lands just after Create would open the
-                            // sheet again over the progress.
-                            convert = { if (vm.progress.value == null) showConvertSheet = true },
+                            // sheet again over the progress. Nor while a page's crop screen is opening, as it
+                            // does for a photo just taken: it would open under the sheet, and Create would make
+                            // the PDF with that screen still open.
+                            convert = { if (vm.progress.value == null && !vm.openingCrop.value) showConvertSheet = true },
                         ),
                         onBack = leave,
                         cropping = cropping,
@@ -610,20 +632,22 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                 }
                 current == "images/crop" -> {
                     // Back is the screen's own: on its second step, it goes back to the first.
-                    CropScreen(
-                        session = freezeWhen(!active, crop),
-                        items = freezeWhen(!active, items),
-                        scan = freezeWhen(!active, scan),
-                        active = active,
-                        arrived = active && transition.currentState == EnterExitState.Visible,
-                        snackbar = screenSnackbar,
-                        actions = CropActions(
-                            done = { vm.finishCrop(it.corners, it.look, it.allPages, it.adjustments, it.rotation) },
-                            // A second tap, once the first has closed the screen, opens no second camera.
-                            takeAnother = { if (vm.finishCrop(it.corners, it.look, it.allPages, it.adjustments, it.rotation)) takePhoto() },
-                            close = vm::closeCrop,
-                        ),
-                    )
+                    cropStates.SaveableStateProvider(shown.opening) {
+                        CropScreen(
+                            session = freezeWhen(!active, crop),
+                            items = freezeWhen(!active, items),
+                            scan = freezeWhen(!active, scan),
+                            active = active,
+                            arrived = active && transition.currentState == EnterExitState.Visible,
+                            snackbar = screenSnackbar,
+                            actions = CropActions(
+                                done = { vm.finishCrop(it.corners, it.look, it.allPages, it.adjustments, it.rotation) },
+                                // A second tap, once the first has closed the screen, opens no second camera.
+                                takeAnother = { if (vm.finishCrop(it.corners, it.look, it.allPages, it.adjustments, it.rotation)) takePhoto() },
+                                close = vm::closeCrop,
+                            ),
+                        )
+                    }
                 }
                 current == "images/result" -> {
                     val files = freezeWhen(!active, result) ?: emptyList()
@@ -765,18 +789,21 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     }
 
     // The sheet is closed for good once it can't show (the images went, say, while Usugami was away),
-    // so it doesn't pop up by itself when images are added later.
-    LaunchedEffect(route, result != null, items.isEmpty()) {
-        if (route != "images" || result != null || items.isEmpty()) showConvertSheet = false
+    // so it doesn't pop up by itself when images are added later. It belongs to the editor: a photo
+    // taken while it was open (the camera app opened beside Usugami, or a tap landed before it covered
+    // Usugami) opens the crop screen, which closes it.
+    LaunchedEffect(screen, items.isEmpty()) {
+        if (screen != "images" || items.isEmpty()) showConvertSheet = false
     }
-    if (showConvertSheet && route == "images" && result == null && items.isNotEmpty()) {
+    if (showConvertSheet && screen == "images" && items.isNotEmpty()) {
         ConvertSheet(
             imageCount = items.size,
             layout = layout,
             initialMerge = merge,
             initialCompression = compression,
             initialChoices = remember { vm.initialChoices() },
-            importing = pendingImports > 0,
+            // A photo just taken is still to go through the crop screen while its page is looked for.
+            importing = pendingImports > 0 || openingCrop,
             saving = busySaving,
             onDismiss = { showConvertSheet = false },
             onCreate = { mergeAll, name, level, ocr ->
@@ -892,8 +919,9 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
 
 /**
  * A screen as the screen animation tells them apart: [screen] (see UsugamiApp), and for a PDF tool's
- * screens, which time the tool was opened from Home. Opened again while its last screen is still
- * sliding away, a tool is a new screen rather than that one coming back.
+ * screens, which time the tool was opened from Home, for the crop screen which time it opened.
+ * Opened again while its last screen is still sliding away, a tool or the crop screen is a new screen
+ * rather than that one coming back.
  */
 private data class Shown(val screen: String, val opening: Int)
 

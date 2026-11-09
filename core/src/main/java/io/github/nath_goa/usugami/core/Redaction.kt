@@ -249,30 +249,102 @@ object Redaction {
 /**
  * A page's text, for Find text: each character knows the glyph it came from. Letters are compared
  * ignoring case and accents (é finds e), and every gap between words or lines is a single space,
- * so a phrase is found across a line break.
+ * so a phrase is found across a line break. Letter-spaced text, such as a name in a heading set in
+ * S P A C E D capitals, is read with a gap between each two letters, and a word that breaks after
+ * a hyphen at the end of a line, such as a double-barrelled name or an email address, with a line
+ * break after the hyphen: a match may cross those (see [Builder.gap] and [Builder.lineBreak]).
  */
-class PageText private constructor(val text: String, private val owners: IntArray) {
+class PageText private constructor(val text: String, private val owners: IntArray, private val inWord: BooleanArray) {
     class Builder {
         private val text = StringBuilder()
         private var owners = IntArray(256)
 
-        private fun append(c: Char, owner: Int) {
-            if (text.length == owners.size) owners = owners.copyOf(owners.size * 2)
+        /** For each space, whether it is a [GAP] or a [HYPHEN_BREAK]. */
+        private var kinds = ByteArray(256)
+
+        /** Whether the last glyph read as nothing but a soft hyphen, the hyphen of a word broken at a line's end. */
+        private var softHyphen = false
+
+        private fun append(c: Char, owner: Int, kind: Byte = SPACE) {
+            if (text.length == owners.size) {
+                owners = owners.copyOf(owners.size * 2)
+                kinds = kinds.copyOf(owners.size)
+            }
             owners[text.length] = owner
+            kinds[text.length] = kind
             text.append(c)
+            softHyphen = false
         }
 
         /** Adds glyph [index], which reads as [unicode]. */
         fun glyph(index: Int, unicode: String) {
-            for (c in fold(unicode)) if (c == ' ') space() else append(c, index)
+            val folded = fold(unicode)
+            for (c in folded) if (c == ' ') space() else append(c, index)
+            if (folded.isEmpty() && SOFT_HYPHEN in unicode) softHyphen = true
         }
 
-        /** A break between words or lines. */
+        /** A break between words. */
         fun space() {
-            if (text.isNotEmpty() && text.last() != ' ') append(' ', -1)
+            if (text.isEmpty()) return
+            if (text.last() == ' ') kinds[text.length - 1] = SPACE else append(' ', -1)
         }
 
-        fun build(): PageText = PageText(text.toString(), owners.copyOf(text.length))
+        /**
+         * A gap between two glyphs where the PDF has no space: a break between words, or the
+         * spacing between the letters of letter-spaced text. Between two lone letters it may be
+         * either, so a match may cross it; elsewhere it is a space.
+         */
+        fun gap() {
+            if (text.isNotEmpty() && text.last() != ' ') append(' ', -1, GAP)
+        }
+
+        /**
+         * A break between lines. After a hyphen it may break a word, so a match may cross it, and
+         * the hyphen too; otherwise it is a space.
+         */
+        fun lineBreak() {
+            if (text.isEmpty()) return
+            val last = text.length - 1
+            when {
+                // Several breaks in a row (a line's and a paragraph's) are one.
+                text[last] == ' ' -> if (kinds[last] == GAP) kinds[last] = SPACE
+                softHyphen || text[last] == '-' -> append(' ', -1, HYPHEN_BREAK)
+                else -> append(' ', -1)
+            }
+        }
+
+        /**
+         * The text read so far, with what a match may cross where it has none of its letters: a
+         * gap between two lone glyphs, and a hyphen break with the hyphen before it.
+         */
+        fun build(): PageText {
+            val length = text.length
+            val owners = owners.copyOf(length)
+            // A word that is a single glyph (one that reads as several letters too) between two spaces.
+            fun lone(from: Int, step: Int): Boolean {
+                var k = from
+                while (k in 0 until length && text[k] != ' ') {
+                    if (owners[k] != owners[from]) return false
+                    k += step
+                }
+                return k != from
+            }
+            val inWord = BooleanArray(length) { k ->
+                when {
+                    kinds[k] == GAP -> lone(k - 1, -1) && lone(k + 1, 1)
+                    kinds[k] == HYPHEN_BREAK -> true
+                    else -> text[k] == '-' && k + 1 < length && kinds[k + 1] == HYPHEN_BREAK
+                }
+            }
+            return PageText(text.toString(), owners, inWord)
+        }
+
+        private companion object {
+            const val SPACE: Byte = 0
+            const val GAP: Byte = 1
+            const val HYPHEN_BREAK: Byte = 2
+            const val SOFT_HYPHEN = '\u00AD'
+        }
     }
 
     /** For each place [query] is found, in order, the glyphs it covers, in reading order. */
@@ -281,17 +353,47 @@ class PageText private constructor(val text: String, private val owners: IntArra
         if (wanted.isEmpty()) return emptyList()
         val found = ArrayList<List<Int>>()
         var i = 0
-        while (i + wanted.length <= text.length) {
-            if (text.regionMatches(i, wanted, 0, wanted.length, ignoreCase = true)) {
-                val glyphs = LinkedHashSet<Int>()
-                for (k in i until i + wanted.length) if (owners[k] >= 0) glyphs += owners[k]
-                if (glyphs.isNotEmpty()) found += glyphs.toList()
-                i += wanted.length
-            } else {
+        while (i < text.length) {
+            var end = matchAt(i, wanted)
+            if (end < 0) {
                 i++
+                continue
             }
+            // A match that crosses a gap or a hyphen break can take the first letters of another
+            // right after it, which then wouldn't be found ("Bo-" and "Bob"): one that starts
+            // before it ends is part of it.
+            var crossed = end - i > wanted.length
+            var start = i + 1
+            while (crossed && start < end) {
+                val next = matchAt(start, wanted)
+                if (next > end) {
+                    end = next
+                    crossed = next - start > wanted.length
+                }
+                start++
+            }
+            val glyphs = LinkedHashSet<Int>()
+            for (k in i until end) if (owners[k] >= 0) glyphs += owners[k]
+            if (glyphs.isNotEmpty()) found += glyphs.toList()
+            i = end
         }
         return found
+    }
+
+    /**
+     * Where a match of [wanted] that starts at [start] ends, exclusive, or -1 if there is none. A
+     * gap between two lone letters, and a line break after a hyphen and that hyphen (see
+     * [Builder.gap] and [Builder.lineBreak]), may come between two of its letters where it has
+     * none of them.
+     */
+    private fun matchAt(start: Int, wanted: String): Int {
+        var k = start
+        for ((j, c) in wanted.withIndex()) {
+            if (j > 0) while (k < text.length && inWord[k] && !text[k].equals(c, ignoreCase = true)) k++
+            if (k == text.length || !text[k].equals(c, ignoreCase = true)) return -1
+            k++
+        }
+        return k
     }
 
     companion object {

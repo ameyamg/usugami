@@ -152,6 +152,72 @@ class RedactionTest {
         assertTrue(text.find("nothing").isEmpty())
     }
 
+    /** As text extraction reads a heading set in spaced capitals: a gap between each two letters, a space between the words. */
+    @Test fun letterSpacedTextIsFound() {
+        val text = PageText.Builder().apply {
+            "JANE".forEachIndexed { i, c ->
+                if (i > 0) gap()
+                glyph(i, c.toString())
+            }
+            space()
+            "DOE".forEachIndexed { i, c ->
+                if (i > 0) gap()
+                glyph(4 + i, c.toString())
+            }
+            // Words drawn apart without spaces between them, as some PDFs are.
+            gap()
+            for ((i, c) in "a".withIndex()) glyph(7 + i, c.toString())
+            gap()
+            for ((i, c) in "natural".withIndex()) glyph(8 + i, c.toString())
+        }.build()
+        assertEquals("J A N E D O E a natural", text.text)
+        assertEquals(listOf((0..6).toList()), text.find("Jane Doe"))
+        assertEquals(listOf((0..3).toList()), text.find("jane"))
+        // A gap beside a whole word is a space between words, as before.
+        assertTrue(text.find("anatural").isEmpty())
+        assertTrue(text.find("Ana").isEmpty())
+        assertEquals(listOf((7..14).toList()), text.find("a natural"))
+    }
+
+    /** As text extraction reads words broken after a hyphen at the end of a line: a line break follows the hyphen. */
+    @Test fun wordsBrokenAfterAHyphenAreFound() {
+        val text = PageText.Builder().apply {
+            var glyph = 0
+            fun word(word: String) = word.forEach { glyph(glyph++, it.toString()) }
+            word("jane.smith-")
+            lineBreak()
+            // A line's break and a paragraph's, in a row.
+            lineBreak()
+            word("jones@example.com")
+            space()
+            // A word hyphenated with a soft hyphen, which reads as nothing.
+            word("confi")
+            glyph(glyph++, "­")
+            lineBreak()
+            word("dential")
+            lineBreak()
+            word("end")
+            lineBreak()
+            word("Bo-")
+            lineBreak()
+            word("Bob")
+            space()
+            word("555-")
+            lineBreak()
+            word("5555")
+        }.build()
+        assertEquals("jane.smith- jones@example.com confi dential end Bo- Bob 555- 5555", text.text)
+        assertEquals(listOf((0..27).toList()), text.find("Jane.Smith-Jones@example.com"))
+        assertEquals(1, text.find("smith jones").size)
+        assertEquals(listOf((28..32).toList() + (34..40).toList()), text.find("confidential"))
+        // A line break after a whole word is a space, as before.
+        assertTrue(text.find("dentialend").isEmpty())
+        assertEquals(1, text.find("dential end").size)
+        // A match across the break doesn't take the first letters of a whole one on the next line.
+        assertEquals(listOf((44..49).toList()), text.find("bob"))
+        assertEquals(listOf((50..57).toList()), text.find("5555"))
+    }
+
     @Test fun matchesDoNotOverlap() {
         val text = pageText("aaaa")
         assertEquals(listOf(listOf(0, 1), listOf(2, 3)), text.find("aa"))

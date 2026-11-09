@@ -4,6 +4,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.text.Layout
+import android.text.TextPaint
 import androidx.core.graphics.withRotation
 import androidx.core.graphics.withScale
 import io.github.nath_goa.usugami.core.GroupFrame
@@ -36,8 +38,9 @@ import kotlin.math.roundToInt
  * What is simplified: fonts become the phone's (sans-serif, serif or monospace), so lines can break
  * in other places than in Word. Text doesn't wrap around floating pictures: they go on lines of
  * their own, or over the text when Word puts them in front of or behind it. Text boxes' text
- * follows the paragraph they're anchored to. Columns become a single column, right and centre tab
- * stops are left tab stops, and charts, SmartArt and drawings Android can't decode (such as EMF and
+ * follows the paragraph they're anchored to. Columns become a single column; right and centre tab
+ * stops act as such only in paragraphs of one line (headers, footers, contents lines), and as left
+ * ones in longer paragraphs; charts, SmartArt and drawings Android can't decode (such as EMF and
  * WMF) become light grey boxes. Footnotes, endnotes, comments and deleted text are left out.
  */
 internal class DocxConverter(
@@ -54,6 +57,9 @@ internal class DocxConverter(
     private lateinit var main: String
     private val headers = HashMap<String, List<DocItem>>()
 
+    /** Whether even pages have headers and footers of their own (Word's "Different Odd & Even Pages"). */
+    private var evenAndOddHeaders = false
+
     /** Converts the document; returns the number of pages. */
     fun convert(): Int {
         main = pkg.mainPart() ?: "word/document.xml"
@@ -61,6 +67,7 @@ internal class DocxConverter(
         styles = DocxStyles.read(pkg, pkg.targetOfType(main, "/styles"), theme, check)
         numbering = DocxNumbering.read(pkg, pkg.targetOfType(main, "/numbering"), theme, styles, check)
         sections = readSections()
+        evenAndOddHeaders = readEvenAndOddHeaders()
         val flow = Flow()
         val reader = Reader(main)
         var shown = false
@@ -190,6 +197,15 @@ internal class DocxConverter(
         val pageStart: Int?,
         val pageFormat: ListNumbering.Format,
     )
+
+    /** Whether the document's settings give even pages their own headers and footers. */
+    private fun readEvenAndOddHeaders(): Boolean {
+        var found = false
+        pkg.targetOfType(main, "/settings")?.let { path ->
+            pkg.xml(path, check)?.use { x -> x.children { if (x.name == "evenAndOddHeaders") found = x.flag() } }
+        }
+        return found
+    }
 
     // ---- Sections: read ahead, since a section's page size is written at its end ----
 
@@ -994,9 +1010,14 @@ internal class DocxConverter(
         }
 
         private fun drawHeaderAndFooter(c: Canvas) {
-            val first = section.titlePage && pageInSection == 1
-            val header = if (first) section.headers["first"] else section.headers["default"]
-            val footer = if (first) section.footers["first"] else section.footers["default"]
+            // Odd and even go by the number the page shows, as in Word; an even page without a header of its own has none.
+            val kind = when {
+                section.titlePage && pageInSection == 1 -> "first"
+                evenAndOddHeaders && shownNumber % 2 == 0 -> "even"
+                else -> "default"
+            }
+            val header = section.headers[kind]
+            val footer = section.footers[kind]
             val headerOverlays = ArrayList<Floating>()
             val footerOverlays = ArrayList<Floating>()
             val head = header?.let { headerBlock(it, headerOverlays) }
@@ -1090,19 +1111,23 @@ internal class DocxConverter(
      */
     private fun stack(items: List<DocItem>, width: Int, page: PageNumber, maxHeight: Float, behind: Int?, overlays: MutableList<Floating>? = null): Block {
         val placed = ArrayList<Spaced>()
-        for (item in items) when (item) {
-            is DocPara -> {
-                for (f in item.floats) {
-                    if (f.overText && overlays != null) overlays += f
-                    else placed += Spaced(floatBlock(f, width.toFloat(), maxHeight, 0f), 0, 0)
+        for (item in items) {
+            // A table cell can hold a whole report: Cancel is heard while it's laid out.
+            check()
+            when (item) {
+                is DocPara -> {
+                    for (f in item.floats) {
+                        if (f.overText && overlays != null) overlays += f
+                        else placed += Spaced(floatBlock(f, width.toFloat(), maxHeight, 0f), 0, 0)
+                    }
+                    val pieces = paragraphBlock(item, width, page, maxHeight, behind).pieces()
+                    for ((i, piece) in pieces.withIndex()) {
+                        placed += Spaced(piece, if (i == 0) spaceBefore(item.props).units.toInt() else 0, if (i == pieces.lastIndex) spaceAfter(item.props).units.toInt() else 0)
+                    }
                 }
-                val pieces = paragraphBlock(item, width, page, maxHeight, behind).pieces()
-                for ((i, piece) in pieces.withIndex()) {
-                    placed += Spaced(piece, if (i == 0) spaceBefore(item.props).units.toInt() else 0, if (i == pieces.lastIndex) spaceAfter(item.props).units.toInt() else 0)
-                }
+                is DocTable -> placed += Spaced(tableBlock(item, width.toFloat(), page, maxHeight, behind), 0, 0)
+                else -> Unit
             }
-            is DocTable -> placed += Spaced(tableBlock(item, width.toFloat(), page, maxHeight, behind), 0, 0)
-            else -> Unit
         }
         return StackBlock(placed)
     }
@@ -1154,7 +1179,7 @@ internal class DocxConverter(
         val left = (props.left ?: 0f).units
         val firstStart = left + (props.firstLine ?: 0f).units
         val defaultTab = 36f.units
-        val tabs = props.tabs?.set.orEmpty().map { it.units }
+        var tabs = props.tabs?.set.orEmpty().map { it.units }
         var textStart = firstStart
         val label = p.label?.takeIf { it.isNotEmpty() }?.let { text ->
             val paint = p.labelStyle.paint()
@@ -1167,6 +1192,7 @@ internal class DocxConverter(
             }
             Label(text, p.labelStyle.copy(color = p.labelStyle.colorOn(shade)), firstStart.toInt())
         }
+        alignedTabs(rich.text, props, textStart, width - (props.right ?: 0f).units, p.mark)?.let { tabs = it }
         return ParagraphBlock(
             ParagraphSpec(
                 text = rich.text,
@@ -1192,6 +1218,32 @@ internal class DocxConverter(
                 ruleBelow = rule(props.borderBottom),
             ),
         )
+    }
+
+    /**
+     * The tab stops that put a one-line paragraph's [text], starting [start] units in, where Word's
+     * right and centre stops put it, as plain left stops (Android's lines have only those): a header's
+     * page number against the margin, say. Null when the paragraph has none of those stops, or more
+     * than a line that ends by [end]. Android measures stops from where a line's text starts, so for a
+     * first line starting past the left indent (indented, or after a list label) they're given that
+     * much nearer.
+     */
+    private fun alignedTabs(text: CharSequence, props: ParaProps, start: Float, end: Float, style: TextStyle): List<Float>? {
+        val stops = props.tabs?.takeIf { it.aligned.isNotEmpty() } ?: return null
+        // A centred or right-aligned line moves as a whole: its stops are left as they are.
+        if (props.rtl == true || props.align == Align.CENTER || props.align == Align.END || '\t' !in text || '\n' in text) return null
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).also { style.applyTo(it) }
+        val widths = ArrayList<Float>()
+        var from = 0
+        for (i in 0..text.length) {
+            if (i < text.length && text[i] != '\t') continue
+            widths += Layout.getDesiredWidth(text, from, i, paint)
+            from = i + 1
+        }
+        val positions = stops.positions(start, widths, 36f.units, 1f.units)
+        if (positions.last() + widths.last() > end + 1f) return null
+        val shift = max(0f, start - (props.left ?: 0f).units)
+        return positions.map { it - shift }
     }
 
     /** [t] laid out in [available] units, on [behind] (the shading under it, if any). */
@@ -1226,6 +1278,8 @@ internal class DocxConverter(
             return i >= 0 && next.cells[i].vMerge == "continue"
         }
         val rows = t.rows.mapIndexed { r, row ->
+            // A table thousands of rows long takes seconds to lay out: Cancel is heard meanwhile.
+            check()
             val cells = row.cells.mapIndexed { i, cell ->
                 val col = cellColumns[r][i].coerceAtMost(columns - 1)
                 val end = (col + cell.span).coerceAtMost(columns)

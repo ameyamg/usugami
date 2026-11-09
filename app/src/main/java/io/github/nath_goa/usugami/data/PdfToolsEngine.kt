@@ -1,5 +1,6 @@
 package io.github.nath_goa.usugami.data
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -123,7 +124,7 @@ class PdfToolsEngine(private val context: Context) {
     }
 
     // The folder is created each time: the system may have cleared the cache since the last run.
-    private fun memory() = MemoryUsageSetting.setupMixed(24L * 1024 * 1024).setTempDir(scratchDir.apply { mkdirs() })
+    private fun memory() = pdfScratch(scratchDir.apply { mkdirs() })
 
     /** Deletes the PDFs made before, but [keep]: a result showing again after Android restarted Usugami. */
     fun clearOutput(keep: Collection<File> = emptyList()) { outputDir.deleteAllBut(keep, context) }
@@ -201,18 +202,36 @@ class PdfToolsEngine(private val context: Context) {
         }
     }
 
-    fun inspect(input: PdfInput, password: String): PdfInput =
-        load(input.file, password).use { doc ->
-            if (doc.numberOfPages == 0) throw IOException("This PDF has no pages")
-            // Every page found once, as the tools find them: a page tree nested deeper than PDFBox
-            // goes (it calls itself for each level) fails here, as a damaged PDF does, not later.
-            try {
-                doc.pages.count()
-            } catch (e: StackOverflowError) {
-                throw tooDeep(e)
+    /**
+     * Reads [input]'s pages with [password]. A damaged page tree is mended (see [repairPageTree]) and
+     * the copy saved again, without its password, so that every reader of it finds the same pages:
+     * the tools, and Android's renderer, which draws the previews and Redact PDF's pictures.
+     */
+    fun inspect(input: PdfInput, password: String): PdfInput {
+        // Written whole before it takes the copy's place, so a run cut short leaves the copy as it was.
+        val mended = File(inputDir, "${input.id}-mended.tmp")
+        try {
+            val (pageCount, repaired) = load(input.file, password).use { doc ->
+                // Every page found once, as the tools find them: a page tree nested deeper than PDFBox
+                // goes (it calls itself for each level) fails here, as a damaged PDF does, not later.
+                val changed = try {
+                    repairPageTree(doc).also { doc.pages.count() }
+                } catch (e: StackOverflowError) {
+                    throw tooDeep(e)
+                }
+                if (doc.numberOfPages == 0) throw IOException("This PDF has no pages")
+                if (changed) {
+                    doc.isAllSecurityToBeRemoved = true
+                    doc.save(mended)
+                }
+                doc.numberOfPages to changed
             }
-            input.copy(pageCount = doc.numberOfPages, password = password)
+            if (repaired && !mended.renameTo(input.file)) throw IOException("Couldn't keep the mended copy")
+            return input.copy(pageCount = pageCount, password = password)
+        } finally {
+            mended.delete()
         }
+    }
 
     /** Opens a copy that [import] found locked; throws [PdfWrongPassword] if [password] doesn't fit. */
     fun unlock(input: PdfInput, password: String): PdfInput = try {
@@ -225,32 +244,42 @@ class PdfToolsEngine(private val context: Context) {
         require(groups.isNotEmpty() && groups.all { it.isNotEmpty() })
         clearOutput()
         outputDir.mkdirs()
-        val base = FileNames.sanitize(baseName, "Split")
+        // A long name is cut the same for every part, so their names begin alike, and their numbers
+        // and pages stay whole.
+        val names = FileNames.withSuffixes(
+            baseName,
+            if (groups.size == 1) listOf("") else groups.mapIndexed(::partSuffix),
+            "Split",
+        )
         val taken = HashSet<String>()
         try {
             load(input.file, input.password).use { source ->
                 // Read once for all the parts: finding a page in the page tree, and what each part
                 // must be cut off from.
                 val sourcePages = source.pages.toList()
-                val cutFrom = PageCleanup.Source(sourcePages)
+                val cutFrom = PageCleanup.Source(source, sourcePages)
                 return groups.mapIndexed { index, pages ->
                     check()
                     require(pages.all { it in sourcePages.indices })
-                    val suffix = if (groups.size == 1) "" else "_${index + 1}_${pages.first() + 1}-${pages.last() + 1}"
-                    val name = FileNames.unique(FileNames.sanitize(base + suffix, "Split"), taken)
+                    val name = FileNames.unique(names[index], taken)
                     taken += name
                     val target = File(outputDir, "$name.pdf")
                     PDDocument(memory()).use { dest ->
+                        // Each page's copy in the part, by the page, for the links between them.
+                        val copies = IdentityHashMap<COSDictionary, COSDictionary>()
                         for (pageIndex in pages) {
                             check()
                             val page = sourcePages[pageIndex]
                             val imported = dest.importPage(page)
+                            copies[page.cosObject] = imported.cosObject
                             // Its resources, also when inherited, listing only the pictures and forms
                             // it draws: pages often share one list that holds every page's.
                             page.resources?.let { imported.resources = PDResources(XObjectCleanup.drawnOnly(page, it.cosObject)) }
                         }
                         // The copies' links, comments and form fields still lead to the source's pages,
-                        // which would bring the whole source into the part.
+                        // which would bring the whole source into the part. Links to the part's own
+                        // pages lead to their copies instead; the others are cut.
+                        PageCleanup.keepLinksWithin(dest, cutFrom, copies)
                         PageCleanup.dropSourcePages(dest, cutFrom, check)
                         dest.save(target)
                     }
@@ -969,6 +998,57 @@ class PdfToolsEngine(private val context: Context) {
         throw tooDeep(e)
     }
 
+    /**
+     * Mends a page tree that PDFBox would read otherwise than viewers do, and returns whether it
+     * changed anything. Viewers walk the tree and take what ends each branch for a page. PDFBox finds
+     * a page by the counts the tree gives, lists them with a walk that skips a page without its type,
+     * and takes a page out through the part of the tree it says holds it: a tool would then fail on a
+     * page, take the wrong one, or Merge's next PDF's page in its place. A page without its type gets
+     * it. A tree that miscounts, leads back into itself or reaches a part of itself twice, ends a
+     * branch with something other than a page, or whose pages and parts don't name the part that
+     * holds them, is laid out again flat with the pages found.
+     */
+    private fun repairPageTree(doc: PDDocument): Boolean {
+        val root = doc.documentCatalog.cosObject.getDictionaryObject(COSName.PAGES) as? COSDictionary ?: return false
+        // A lone page in the tree's place, which PDFBox reads as a tree holding it.
+        if (root.getCOSName(COSName.TYPE) == COSName.PAGE) return false
+        val pages = ArrayList<COSDictionary>()
+        val sound = walkPageTree(root, Collections.newSetFromMap(IdentityHashMap<COSDictionary, Boolean>()).apply { add(root) }, pages)
+        var changed = false
+        for (page in pages) {
+            if (page.getCOSName(COSName.TYPE) != null) continue
+            page.setItem(COSName.TYPE, COSName.PAGE)
+            changed = true
+        }
+        if (!sound) {
+            setPages(doc, pages.map { PDPage(it) })
+            changed = true
+        }
+        return changed
+    }
+
+    /**
+     * Adds the pages under [node] to [pages] in order, entering each part of the tree once (those in
+     * [seen] are left out), and returns whether this part of the tree is sound (see [repairPageTree]).
+     */
+    private fun walkPageTree(node: COSDictionary, seen: MutableSet<COSDictionary>, pages: MutableList<COSDictionary>): Boolean {
+        val first = pages.size
+        var sound = true
+        val kids = node.getDictionaryObject(COSName.KIDS) as? COSArray ?: COSArray()
+        for (i in 0 until kids.size()) {
+            val kid = kids.getObject(i) as? COSDictionary ?: continue
+            if (kid.getDictionaryObject(COSName.PARENT) !== node) sound = false
+            val type = kid.getCOSName(COSName.TYPE)
+            when {
+                // A part of the tree, as PDFBox tells them from pages.
+                type == COSName.PAGES || kid.containsKey(COSName.KIDS) -> if (!seen.add(kid) || !walkPageTree(kid, seen, pages)) sound = false
+                type == null || type == COSName.PAGE -> pages += kid
+                else -> sound = false
+            }
+        }
+        return sound && node.getInt(COSName.COUNT, -1) == pages.size - first
+    }
+
     /** A PDF nested deeper than PDFBox goes, as a damaged one: only a crafted file nests that deep. */
     private fun tooDeep(e: StackOverflowError) = IOException("Too deeply nested", e)
 
@@ -1021,7 +1101,31 @@ class PdfToolsEngine(private val context: Context) {
             if (c.moveToFirst() && !c.isNull(0)) c.getString(0).substringAfterLast('/').takeIf { it.isNotBlank() } else null
         }
     } catch (_: Exception) { null }
+
+    companion object {
+        /**
+         * What [split] adds to the name of part [index] (zero-based), which holds [pages]: its number
+         * and its first and last pages, counted from 1, as in "_2_4-6".
+         */
+        fun partSuffix(index: Int, pages: List<Int>) = "_${index + 1}_${pages.first() + 1}-${pages.last() + 1}"
+    }
 }
 
 /** The page as a viewer shows it: its crop box, turned by its rotation. */
 internal fun PDPage.frame(): PageFrame = cropBox.let { box -> PageFrame(box.lowerLeftX, box.lowerLeftY, box.width, box.height, rotation) }
+
+/**
+ * PDFBox's room to work on one document: memory first, then files in [dir], up to all but a reserve of
+ * the storage free now. A small stream in a PDF can inflate to many gigabytes, which would otherwise
+ * fill the phone, failing other apps' writes until PDFBox gives up; past the limit it fails as full
+ * storage does (see isOutOfSpace), leaving the reserve free. The storage free now is what counts, not
+ * what Android could free by clearing caches: it clears them only for space asked for ahead.
+ */
+@SuppressLint("UsableSpace")
+internal fun pdfScratch(dir: File): MemoryUsageSetting =
+    MemoryUsageSetting.setupMixed(SCRATCH_MEMORY, maxOf(SCRATCH_MEMORY, dir.usableSpace - SCRATCH_RESERVE)).setTempDir(dir)
+
+private const val SCRATCH_MEMORY = 24L * 1024 * 1024
+
+/** Left free for the phone and its other apps to go on working; Android warns of low storage at about twice this. */
+private const val SCRATCH_RESERVE = 256L * 1024 * 1024

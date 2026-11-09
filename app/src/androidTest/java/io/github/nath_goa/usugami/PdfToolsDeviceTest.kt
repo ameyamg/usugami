@@ -8,7 +8,9 @@ import android.graphics.Paint
 import android.graphics.Point
 import android.graphics.Rect
 import android.graphics.Shader
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.nath_goa.usugami.data.CompressJob
 import io.github.nath_goa.usugami.data.PdfCertificateEncrypted
@@ -331,6 +333,38 @@ class PdfToolsDeviceTest {
             assertEquals("This file is not a PDF", e.message)
         }
         assertFalse("The copy should be removed", File(context.cacheDir, "pdf-inputs/1012.pdf").exists())
+    }
+
+    /**
+     * A damaged PDF whose page tree says it has five pages when it has three, miscounts them inside
+     * too, leaves out a page's type and leads back into itself: it has the three pages viewers show,
+     * in order, for Android's renderer, which draws the previews, as for a tool that finds its pages
+     * by number.
+     */
+    @Test fun aDamagedPageTreeIsMended() {
+        val damaged = File(context.cacheDir, "damaged_tree.pdf")
+        PDDocument().use { doc ->
+            val pages = PAGE_WORDS.take(3).map { word -> PDPage(PDRectangle.A4).also { doc.addPage(it); writeText(doc, it, "PAGE $word") } }
+            val root = doc.pages.cosObject
+            fun node(count: Int, vararg held: PDPage) = COSDictionary().apply {
+                setItem(COSName.TYPE, COSName.PAGES)
+                setItem(COSName.PARENT, root)
+                setItem(COSName.KIDS, COSArray().apply { held.forEach { add(it.cosObject) } })
+                setInt(COSName.COUNT, count)
+                held.forEach { it.cosObject.setItem(COSName.PARENT, this) }
+            }
+            // Pages 1 and 2 under a node that says it holds one, page 3 under one that says two.
+            root.setItem(COSName.KIDS, COSArray().apply { add(node(1, pages[0], pages[1])); add(node(2, pages[2])); add(root) })
+            root.setInt(COSName.COUNT, 5)
+            pages[1].cosObject.removeItem(COSName.TYPE)
+            doc.save(damaged)
+        }
+        val input = engine.import(Uri.fromFile(damaged), 1015)
+        assertEquals(3, input.pageCount)
+        ParcelFileDescriptor.open(input.file, ParcelFileDescriptor.MODE_READ_ONLY).use { assertEquals(3, PdfRenderer(it).use { renderer -> renderer.pageCount }) }
+        val left = engine.deletePages(input, listOf(1), "damaged_tree").file
+        val texts = PDDocument.load(left).use { doc -> (1..doc.numberOfPages).map { n -> PDFTextStripper().apply { startPage = n; endPage = n }.getText(doc).trim() } }
+        assertEquals(listOf("PAGE ONE", "PAGE THREE"), texts)
     }
 
     /**

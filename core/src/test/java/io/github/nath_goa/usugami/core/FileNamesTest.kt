@@ -34,6 +34,28 @@ class FileNamesTest {
     }
 
     @Test
+    fun aLongNameIsCutBeforeItsSuffix() {
+        assertEquals("Report_redacted", FileNames.withSuffix("Report.pdf", "_redacted", "x"))
+        // 67 Devanagari letters are 201 bytes: the base gives way, the ending stays whole.
+        val long = FileNames.withSuffix("क".repeat(67), "_redacted", "x")
+        assertEquals("क".repeat(63) + "_redacted", long)
+        assertTrue(long.toByteArray().size <= 200)
+        assertEquals("x_split", FileNames.withSuffix(" ... ", "_split", "x"))
+    }
+
+    @Test
+    fun filesMadeTogetherFromALongNameAllBeginAlike() {
+        // Split's parts: the name is cut once, for the longest ending, not once for each.
+        val parts = FileNames.withSuffixes("क".repeat(67), listOf("_1_1-9", "_10_91-100"), "x")
+        assertEquals(listOf("क".repeat(63) + "_1_1-9", "क".repeat(63) + "_10_91-100"), parts)
+        assertTrue(parts.all { it.toByteArray().size <= 200 })
+        // Room left for the parts' endings keeps "_split" whole after them.
+        val split = FileNames.withSuffix("a".repeat(200), "_split", "x", spare = 10)
+        assertEquals("a".repeat(184) + "_split", split)
+        assertEquals(listOf(split + "_1_1-9", split + "_10_91-100"), FileNames.withSuffixes(split, listOf("_1_1-9", "_10_91-100"), "x"))
+    }
+
+    @Test
     fun windowsDeviceNamesGetAnUnderscore() {
         assertEquals("CON_", FileNames.sanitize("CON", "x"))
         assertEquals("nul_", FileNames.sanitize("nul.pdf", "x"))

@@ -8,6 +8,7 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Point
 import io.github.nath_goa.usugami.core.DetectionStrips
+import io.github.nath_goa.usugami.core.LargeText
 import io.github.nath_goa.usugami.core.OcrPoint
 import io.github.nath_goa.usugami.core.OcrQuad
 import io.github.nath_goa.usugami.core.OcrScale
@@ -46,7 +47,9 @@ internal object PaddleModels {
 
 /**
  * Reads pages with PaddleOCR's PP-OCRv5 pipeline: the detection model finds the lines of text
- * (TextDetection turns its map into boxes, TextLines joins pieces of one line), each line is cut
+ * (TextDetection turns its map into boxes, TextLines joins pieces of one line), and on a small copy
+ * of the page the words too large for it at full size, which are read in place of the pieces of
+ * them found there (LargeText); each line is cut
  * out, straightened and scaled to the recognition model's height, read, and decoded
  * (TextRecognition). Lines come in reading order (ReadingOrder), with corners in the page's pixels.
  * The models are loaded on the first page and freed by [close].
@@ -122,7 +125,8 @@ internal class PaddleOcrRecognizer(private val assets: AssetManager, private val
         // Words of one line that detection found apart are read together, so the space between them
         // is kept. Like PaddleOCR, a line running down the page is read turned a quarter
         // anticlockwise (its top-right corner is where the text starts).
-        val boxes = TextLines.merge(detect(page, models.detector)).map { it.quad }
+        val found = detect(page, models.detector, DETECTION_SIDE)
+        val boxes = TextLines.merge(LargeText.inPlaceOfPieces(found, largeWords(page, models, found))).map { it.quad }
         val vertical = TextLines.vertical(boxes)
         val lines = boxes.mapIndexed { i, box -> Line(if (vertical[i]) box.turned(1) else box, vertical[i]) }
         // Each group of lines is read the right way up: a page photographed upside down (or turned the
@@ -152,9 +156,36 @@ internal class PaddleOcrRecognizer(private val assets: AssetManager, private val
         return result
     }
 
-    /** The boxes of the lines on [page], in its pixels, as PaddleOCR orders their corners. */
-    private suspend fun detect(page: Bitmap, detector: NcnnNet): List<OcrQuad> {
-        val scale = OcrScale.of(page.width, page.height, DETECTION_SIDE, maxEnlarge = 1.0)
+    /**
+     * The words on [page] too large for detection at full size, which found [found]: those found on
+     * a copy [LARGE_TEXT_SIDE] pixels long (LargeText). The model finds letters only up to a few
+     * hundred pixels high, whatever the size it detects at, so every page detected larger than that
+     * copy is looked at again on it. A box found there counts only if it reads as text, turned as
+     * the page's lines will be (TextLines.vertical) and either way up: one that doesn't is a picture
+     * or a logo, and what was found inside it at full size is read instead.
+     */
+    private suspend fun largeWords(page: Bitmap, models: Models, found: List<OcrQuad>): List<OcrQuad> {
+        val fineScale = OcrScale.of(page.width, page.height, DETECTION_SIDE, maxEnlarge = 1.0)
+        if (max(page.width, page.height) * fineScale <= LARGE_TEXT_SIDE) return emptyList()
+        val minHeight = LARGE_TEXT_MIN_HEIGHT * min(page.width, page.height)
+        val candidates = LargeText.candidates(detect(page, models.detector, LARGE_TEXT_SIDE), found, minHeight)
+        val vertical = TextLines.vertical(found + candidates)
+        return candidates.filterIndexed { i, box ->
+            currentCoroutineContext().ensureActive()
+            val quad = if (vertical[found.size + i]) box.turned(1) else box
+            listOf(quad, quad.turned(2)).any { turn ->
+                val text = readLine(page, turn, models)
+                text.confidence >= MIN_CONFIDENCE && text.text.isNotBlank()
+            }
+        }
+    }
+
+    /**
+     * The boxes of the lines on [page], detected at [longSide] pixels (OcrScale), in the page's
+     * pixels, as PaddleOCR orders their corners.
+     */
+    private suspend fun detect(page: Bitmap, detector: NcnnNet, longSide: Int): List<OcrQuad> {
+        val scale = OcrScale.of(page.width, page.height, longSide, maxEnlarge = 1.0)
         val width = max(1, (page.width * scale).roundToInt())
         val height = max(1, (page.height * scale).roundToInt())
         val scaled = if (width == page.width && height == page.height) page else Bitmap.createScaledBitmap(page, width, height, true)
@@ -257,6 +288,16 @@ internal class PaddleOcrRecognizer(private val assets: AssetManager, private val
          * than 1600 or 960 (measured with PaddleOCR's own pipeline).
          */
         const val DETECTION_SIDE = 2240
+
+        /**
+         * The long side, in pixels, of the copy large words are found on: there, the model finds
+         * letters up to more than half the page's height (on a page detected at [DETECTION_SIDE],
+         * only up to about a sixth).
+         */
+        const val LARGE_TEXT_SIDE = 640
+
+        /** Only boxes at least this share of the page's short side high across their text are taken from that copy. */
+        const val LARGE_TEXT_MIN_HEIGHT = 0.1f
 
         /**
          * Larger pages are detected in strips of at most this many pixels, overlapping by
