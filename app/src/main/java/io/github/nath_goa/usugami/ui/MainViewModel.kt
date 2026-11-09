@@ -26,6 +26,7 @@ import io.github.nath_goa.usugami.core.ImageTransform
 import io.github.nath_goa.usugami.core.LayoutSettings
 import io.github.nath_goa.usugami.core.NaturalOrder
 import io.github.nath_goa.usugami.core.LookAdjustments
+import io.github.nath_goa.usugami.core.MarkStyle
 import io.github.nath_goa.usugami.core.PageCrop
 import io.github.nath_goa.usugami.core.PageLook
 import io.github.nath_goa.usugami.core.SharedFiles
@@ -40,6 +41,7 @@ import io.github.nath_goa.usugami.data.ImageItem
 import io.github.nath_goa.usugami.data.ImageStore
 import io.github.nath_goa.usugami.data.ImageUnreadableException
 import io.github.nath_goa.usugami.data.LookAdjustmentsParceler
+import io.github.nath_goa.usugami.data.MarkSetting
 import io.github.nath_goa.usugami.data.OcrEngine
 import io.github.nath_goa.usugami.data.OcrLanguage
 import io.github.nath_goa.usugami.data.OcrProblem
@@ -63,12 +65,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -85,7 +89,7 @@ enum class SortMode { NAME_ASC, NAME_DESC, REVERSE }
 
 /** [done] of [total] steps of [stage]; a [total] of 0 means the amount isn't known yet. */
 data class Progress(val done: Int, val total: Int, val stage: Stage = Stage.CREATE) {
-    enum class Stage { DOWNLOAD_OCR, CREATE, READ_TEXT, ADD_TEXT }
+    enum class Stage { DOWNLOAD_OCR, CREATE, READ_TEXT, ADD_TEXT, ADD_MARK }
 }
 
 /** What the user chose in the Convert sheet. [ocrLanguage] is null when OCR is off. */
@@ -334,6 +338,27 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     val zipProgress: StateFlow<ZipProgress?> = zipper.progress
     /** Share screens for ZIP files of the result's PDFs, once each is ready. */
     val zipShares: Flow<Intent> = zipper.shares
+
+    /**
+     * The Usugami mark on the result's PDFs. A change rewrites them after a save under way, and the
+     * copies saved before are then of the PDFs as they were: saving again saves them anew.
+     */
+    private val marker = ResultMarker(
+        app, handle, viewModelScope, fileOps, result,
+        changed = { files ->
+            _result.value = files
+            _saved.value = false
+        },
+        failed = { message(R.string.mark_failed) },
+        refused = { pluralMessage(R.plurals.mark_refused, it) },
+        turn = saveTurn,
+    )
+    /** Whether the PDFs made carry the Usugami mark, and its size and opacity: one setting for the whole app. */
+    val mark: StateFlow<MarkSetting> = marker.setting
+    /** The result's PDFs are being changed to [mark]: they can't be opened, shared or saved meanwhile. */
+    val marking: StateFlow<Boolean> = marker.working
+    /** The result's first page, which the result screen shows the mark on while it is changed. */
+    val markPreview: StateFlow<MarkPreview?> = marker.preview
 
     // Cropped pages' files are numbered from the same count.
     private var nextId = maxOf(
@@ -681,7 +706,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                     files.size == 1 -> message(R.string.open_no_space)
                     else -> message(
                         R.string.file_problem,
-                        noSpace.joinToString(", "),
+                        strings.listOfNames(noSpace),
                         strings.getString(if (noSpace.size == 1) R.string.open_no_space else R.string.open_no_space_many),
                     )
                 }
@@ -735,7 +760,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
 
     /** Says the files [names] were left out of a share, [res] saying why. */
     private fun leftOut(@PluralsRes res: Int, names: List<String>) {
-        if (names.isNotEmpty()) _messages.trySend(strings.getQuantityString(res, names.size, names.size, names.joinToString(", ")))
+        if (names.isNotEmpty()) _messages.trySend(strings.getQuantityString(res, names.size, names.size, strings.listOfNames(names)))
     }
 
     /** A name for a shared file whose app gives it none, to say which it is. */
@@ -1276,7 +1301,12 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                         _progress.value = Progress(done, snapshot.size)
                     }
                     made = files
-                    if (engine == null || language == null) files else addTextLayer(files, engine, language).also { made = it }
+                    val read = if (engine == null || language == null) files else addTextLayer(files, engine, language).also { made = it }
+                    val job = coroutineContext.job
+                    marker.markMade(read, { job.ensureActive() }) { index, count ->
+                        // Which PDF, when there are several.
+                        _progress.value = if (count > 1) Progress(index, count, Progress.Stage.ADD_MARK) else Progress(0, 0, Progress.Stage.ADD_MARK)
+                    }
                 }
                 _saved.value = false
                 resultPutAway = false
@@ -1374,6 +1404,20 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     private fun putAwayResult() {
         if (_result.value != null) resultPutAway = true
         _result.value = null
+        marker.stop()
+    }
+
+    /**
+     * Puts the Usugami mark on the result's PDFs and those made from now on, or takes it off. Not while
+     * the PDFs or a ZIP file of them are being saved, which would save them half changed.
+     */
+    fun setMark(on: Boolean) {
+        if (!_busySaving.value && !zipper.busy) marker.setOn(on)
+    }
+
+    /** Gives the Usugami mark [style], on the result's PDFs too; as [setMark], not while saving. */
+    fun setMarkStyle(style: MarkStyle) {
+        if (!_busySaving.value && !zipper.busy) marker.setStyle(style)
     }
 
     fun startOver() {
@@ -1408,14 +1452,16 @@ class MainViewModel(private val app: Application, private val handle: SavedState
 
     private fun resultCleared(count: Int) {
         _result.value = null
+        marker.stop()
         _messages.trySend(strings.getQuantityString(R.plurals.msg_result_cleared, count))
     }
 
     fun saveToDownloads() {
         val files = _result.value ?: return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        // A second tap that lands before the button is turned off does nothing.
-        if (_busySaving.value) return
+        // A second tap that lands before the button is turned off does nothing, as does one that lands
+        // as the Usugami mark starts changing.
+        if (_busySaving.value || marker.working.value) return
         save {
             // Saved there already (a second tap, say), it only says so again.
             // Each copy is kept as it is made: when a later PDF fails, saving again doesn't copy the first ones twice.
@@ -1485,6 +1531,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     /** Makes one ZIP file of the PDFs, one per image, and shares it (see [zipShares]). */
     fun shareZip() {
         val files = _result.value ?: return
+        if (marker.working.value) return
         zipper.share(files, resultName)
     }
 

@@ -44,6 +44,7 @@ import io.github.nath_goa.usugami.data.PdfToolsEngine
 import io.github.nath_goa.usugami.data.ToolJob
 import io.github.nath_goa.usugami.ui.PdfTool
 import io.github.nath_goa.usugami.ui.PdfToolsViewModel
+import io.github.nath_goa.usugami.ui.SplitMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -260,6 +261,31 @@ class PageToolsDeviceTest {
             assertEquals("Part ${index + 1} has page 1's value", index == 0, all.contains("NEAR VALUE"))
             assertEquals("Part ${index + 1} has page 2's value", index == 1, all.contains("FAR VALUE"))
         }
+    }
+
+    /**
+     * Split's PDFs are named by their pages after the name typed. A single one is named as typed,
+     * unless that is the PDF's own name, which it would take. Their ZIP file is named as typed, or
+     * after the PDF's own name with "_split".
+     */
+    @Test fun splitPdfsAreNamedByTheirPages() {
+        val vm = onMain { PdfToolsViewModel(app, SavedStateHandle()) }.also { vm = it }
+        onMain { vm.addPdfs(listOf(picked(asset("alpha.pdf"))), replace = true) }
+        waitUntil("the PDF to be added") { vm.inputs.value.size == 1 && !vm.importing.value }
+        fun split(mode: SplitMode, text: String, combine: Boolean, name: String): List<String> {
+            onMain { vm.runSplit(mode, text, combine, name) }
+            waitUntil("the PDFs") { vm.result.value != null && !vm.processing.value }
+            return onMain { vm.result.value!!.map { it.name } }
+        }
+        val own = onMain { vm.defaultName(PdfTool.SPLIT) }
+        assertEquals("alpha", own)
+        assertEquals(listOf("alpha_p1-2.pdf", "alpha_p3.pdf"), split(SplitMode.CUSTOM, "1-2;3", combine = false, own))
+        assertEquals(listOf("alpha_p3,1.pdf"), split(SplitMode.SELECTED, "3,1", combine = true, own))
+        assertEquals(listOf("Chosen.pdf"), split(SplitMode.SELECTED, "3,1", combine = true, "Chosen"))
+        assertEquals("A ZIP file named as typed", "Chosen.zip", onMain { vm.zipFileName() })
+        // Typed with ".pdf", the PDF's own name is still its own.
+        assertEquals(listOf("alpha_p1.pdf", "alpha_p2.pdf", "alpha_p3.pdf"), split(SplitMode.EVERY_PAGE, "", combine = false, "alpha.pdf"))
+        assertEquals("Their ZIP file", "alpha_split.zip", onMain { vm.zipFileName() })
     }
 
     /**

@@ -70,6 +70,11 @@
     </plurals>
     <!-- A file's name, then what is wrong with it or what happened to it, as said of one file. %1$s may also list several names. -->
     <string name="file_problem">%1$s: %2$s</string>
+    <!-- A list of file names cut short, in place of the names in a message: %1$s lists the first few, %2$d counts the rest (always 2 or more). -->
+    <plurals name="names_and_more">
+        <item quantity="one">%1$s और %2$d अन्य</item>
+        <item quantity="other">%1$s और %2$d अन्य</item>
+    </plurals>
     <plurals name="batch_nothing_to_number" tools:ignore="ImpliedQuantity">
         <item quantity="one">%2$s में नंबर लगाने के लिए कोई पेज नहीं बचा, इसलिए उसे छोड़ दिया गया।</item>
         <item quantity="other">%1$d PDF में नंबर लगाने के लिए कोई पेज नहीं बचा, इसलिए उन्हें छोड़ दिया गया: %2$s।</item>
@@ -174,7 +179,7 @@
     <string name="color_red">लाल</string>
     <string name="color_blue">नीला</string>
     <string name="color_green">हरा</string>
-    <string name="watermark_opacity">पारदर्शिता</string>
+    <string name="watermark_opacity">अपारदर्शिता</string>
     <string name="opacity_translucent">पारदर्शी</string>
     <string name="opacity_semi">आधा पारदर्शी</string>
     <string name="opacity_opaque">अपारदर्शी</string>
@@ -623,6 +628,20 @@
     <string name="start_over">फिर से शुरू करें</string>
     <string name="start_over_title">फिर से शुरू करें?</string>
     <string name="not_saved_note">अभी सेव नहीं हुई है। फिर से शुरू करने पर यह मिट जाएगी, इसलिए अगर आप इसे रखना चाहते हैं, तो पहले इसे सेव करें।</string>
+    <string name="mark_title">Usugami वॉटरमार्क</string>
+    <string name="mark_detail">ऐप को सपोर्ट करने के लिए हर पेज के कोने में छोटा सा \"Usugami\" जोड़ता है।</string>
+    <string name="mark_adjust">वॉटरमार्क का साइज़ और अपारदर्शिता</string>
+    <string name="mark_size">साइज़</string>
+    <string name="mark_opacity">अपारदर्शिता</string>
+    <string name="mark_percent">%1$d%%</string>
+    <string name="mark_preview_description">Usugami वॉटरमार्क के साथ पेज 1</string>
+    <string name="mark_working">वॉटरमार्क अपडेट किया जा रहा है…</string>
+    <string name="mark_adding">Usugami वॉटरमार्क जोड़ा जा रहा है…</string>
+    <string name="mark_failed">Usugami वॉटरमार्क बदला नहीं जा सका। जांचें कि स्टोरेज में काफ़ी खाली जगह है।</string>
+    <plurals name="mark_refused" tools:ignore="ImpliedQuantity">
+        <item quantity="one">इस PDF के डिजिटल हस्ताक्षर कोई बदलाव नहीं करने देते, इसलिए इस पर Usugami वॉटरमार्क नहीं लगा।</item>
+        <item quantity="other">%d PDF के डिजिटल हस्ताक्षर कोई बदलाव नहीं करने देते, इसलिए उन पर Usugami वॉटरमार्क नहीं लगा।</item>
+    </plurals>
 
     <!-- Dialogs -->
     <string name="discard_title">इन इमेज को खारिज करें?</string>

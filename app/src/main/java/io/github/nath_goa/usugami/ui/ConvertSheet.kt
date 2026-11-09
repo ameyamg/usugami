@@ -45,6 +45,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.keepScreenOn
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -299,6 +300,9 @@ fun ProgressDialog(progress: Progress, cancelling: Boolean, onCancel: () -> Unit
     }
     AlertDialog(
         onDismissRequest = {},
+        // The screen stays on while a job shows its progress, which can take minutes, and goes off
+        // as it would once the dialog has gone, the job done, failed or cancelled.
+        modifier = Modifier.keepScreenOn(),
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
         title = {
             Text(
@@ -308,6 +312,7 @@ fun ProgressDialog(progress: Progress, cancelling: Boolean, onCancel: () -> Unit
                         Progress.Stage.CREATE -> R.string.creating_pdf
                         Progress.Stage.READ_TEXT -> R.string.ocr_reading
                         Progress.Stage.ADD_TEXT -> R.string.ocr_adding_text
+                        Progress.Stage.ADD_MARK -> R.string.mark_adding
                     },
                 ),
             )
@@ -333,6 +338,8 @@ fun ProgressDialog(progress: Progress, cancelling: Boolean, onCancel: () -> Unit
                     Progress.Stage.READ_TEXT ->
                         Text(pluralStringResource(R.plurals.progress_pages, progress.total, progress.done, progress.total))
                     Progress.Stage.ADD_TEXT -> Unit
+                    Progress.Stage.ADD_MARK ->
+                        if (progress.total > 0) Text(stringResource(R.string.batch_progress, progress.done + 1, progress.total))
                 }
             }
         },

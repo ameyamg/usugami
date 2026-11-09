@@ -76,6 +76,11 @@
     </plurals>
     <!-- A file's name, then what is wrong with it or what happened to it, as said of one file. %1$s may also list several names. -->
     <string name="file_problem">%1$s: %2$s</string>
+    <!-- A list of file names cut short, in place of the names in a message: %1$s lists the first few, %2$d counts the rest (always 2 or more). -->
+    <plurals name="names_and_more">
+        <item quantity="one">%1$s and %2$d more</item>
+        <item quantity="other">%1$s and %2$d more</item>
+    </plurals>
     <!-- Add page numbers with several PDFs: %1$d counts the PDFs whose every page was to be skipped (never 0), %2$s lists their names. -->
     <plurals name="batch_nothing_to_number">
         <item quantity="one">No page is left to number in %2$s, so it was left out.</item>
@@ -116,9 +121,9 @@
         <item quantity="other">Compress %d PDFs</item>
     </plurals>
     <string name="pdf_no_reduction">This PDF is already compact; the original size was kept.</string>
-    <!-- Compress PDF with a PDF that had a password: it couldn't keep the original, and the new PDF is no smaller. -->
+    <!-- Compress PDF with a PDF that had a password, or with the Usugami watermark on: it couldn't keep the original, and the new PDF is no smaller. -->
     <string name="pdf_not_smaller">This PDF couldn\'t be made any smaller.</string>
-    <!-- Compress PDF with several PDFs: %1$d counts those that had a password and came out no smaller (never 0), %2$s lists their names. -->
+    <!-- Compress PDF with several PDFs: %1$d counts those that had a password, or got the Usugami watermark, and came out no smaller (never 0), %2$s lists their names. -->
     <plurals name="batch_not_smaller">
         <item quantity="one">%2$s couldn\'t be made any smaller.</item>
         <item quantity="other">%1$d PDFs couldn\'t be made any smaller: %2$s.</item>
@@ -673,6 +678,24 @@
     <string name="start_over">Start over</string>
     <string name="start_over_title">Start over?</string>
     <string name="not_saved_note">Not saved yet. Starting over deletes it, so save it first if you want to keep it.</string>
+    <!-- The Usugami watermark on the result screen: a switch that puts a small "Usugami" on the PDFs' pages, and an arrow on its row that opens its size and opacity. "Usugami" is the app's name and stays as it is in every language. -->
+    <string name="mark_title">Usugami watermark</string>
+    <string name="mark_detail">Adds a small \"Usugami\" in the corner of each page, to support the app.</string>
+    <string name="mark_adjust">Watermark size and opacity</string>
+    <string name="mark_size">Size</string>
+    <string name="mark_opacity">Opacity</string>
+    <!-- A slider's value, such as "20%". -->
+    <string name="mark_percent">%1$d%%</string>
+    <string name="mark_preview_description">Page 1 with the Usugami watermark</string>
+    <string name="mark_working">Updating the watermark…</string>
+    <!-- Over the progress bar once the PDFs are made, while the watermark goes on them. -->
+    <string name="mark_adding">Adding the Usugami watermark…</string>
+    <string name="mark_failed">Couldn\'t change the Usugami watermark. Check that there is enough free storage.</string>
+    <!-- Once, when the watermark can't go on PDFs whose digital signature allows no changes at all (a certification): they are left as they are. -->
+    <plurals name="mark_refused">
+        <item quantity="one">This PDF\'s digital signature allows no changes, so it has no Usugami watermark.</item>
+        <item quantity="other">%d PDFs have a digital signature that allows no changes, so they have no Usugami watermark.</item>
+    </plurals>
 
     <!-- Dialogs -->
     <string name="discard_title">Discard these images?</string>

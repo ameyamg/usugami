@@ -92,6 +92,14 @@ class OfficeFormatsTest {
         assertEquals("%5", ListNumbering.wordLabel("%5", intArrayOf(1), formats))
     }
 
+    @Test fun marksFootnotesAndEndnotes() {
+        assertEquals("3", ListNumbering.noteMark(3, null, ListNumbering.Format.DECIMAL))
+        assertEquals("iv", ListNumbering.noteMark(4, null, ListNumbering.Format.LOWER_ROMAN))
+        assertEquals("C", ListNumbering.noteMark(3, "upperLetter", ListNumbering.Format.DECIMAL))
+        assertEquals("2", ListNumbering.noteMark(2, "bullet", ListNumbering.Format.DECIMAL))
+        assertEquals(listOf("*", "†", "‡", "§", "**", "§§§"), listOf(1, 2, 3, 4, 5, 12).map { ListNumbering.noteMark(it, "chicago", ListNumbering.Format.DECIMAL) })
+    }
+
     @Test fun readsPowerPointAutonumberSchemes() {
         assertEquals(Triple(ListNumbering.Format.DECIMAL, "", "."), ListNumbering.powerPointScheme("arabicPeriod"))
         assertEquals(Triple(ListNumbering.Format.LOWER_LETTER, "(", ")"), ListNumbering.powerPointScheme("alphaLcParenBoth"))
@@ -199,6 +207,28 @@ class OfficeFormatsTest {
         // On an empty page something has to go, however tall.
         assertEquals(1, PageBreaking.linesThatFit(intArrayOf(900, 950), 800, avoidSingleLines = true, force = true))
         assertEquals(0, PageBreaking.linesThatFit(IntArray(0), 800, avoidSingleLines = true, force = true))
+    }
+
+    @Test fun wordsWiderThanTheLineBreakAtItsEnd() {
+        // Characters one unit wide: a first line of 10, then lines of 5, the last one what is left.
+        assertEquals(listOf(10, 15, 20), LongWords.lineEnds(FloatArray(22) { 1f }, 10f, 5f).toList())
+        // A mark (no width of its own) stays with its letter; a line takes a character however wide it is.
+        assertEquals(listOf(4, 6), LongWords.lineEnds(floatArrayOf(1f, 1f, 1f, 0f, 1f, 1f, 1f), 3.5f, 2f).toList())
+        assertEquals(listOf(1, 2), LongWords.lineEnds(floatArrayOf(9f, 9f, 1f), 5f, 5f).toList())
+        // A line that doesn't fit when measured on its own gives up its last character.
+        assertEquals(listOf(9, 18), LongWords.lineEnds(FloatArray(20) { 1f }, 10f, 10f) { start, end, _ -> end - start < 10 }.toList())
+        assertEquals(0, LongWords.lineEnds(FloatArray(5) { 1f }, 10f, 10f).size)
+    }
+
+    @Test fun runsWiderThanTheLineBreakAfterTheirLastHyphenThatFits() {
+        // Hyphens at 2, 5, 8 and 11: a line can end after each.
+        val hyphens = { at: Int -> at % 3 == 0 }
+        assertEquals(listOf(9), LongWords.lineEnds(FloatArray(14) { 1f }, 10f, 10f, breakable = hyphens).toList())
+        // After text on the line, the run's start goes on it as far as it fits, or the run goes to the next line.
+        assertEquals(listOf(3, 12), LongWords.lineEnds(FloatArray(14) { 1f }, 4f, 10f, lineStart = false, breakable = hyphens).toList())
+        assertEquals(listOf(0, 9), LongWords.lineEnds(FloatArray(14) { 1f }, 2f, 10f, lineStart = false, breakable = hyphens).toList())
+        // A word with nowhere to break goes to the next line, then breaks at each line's end.
+        assertEquals(listOf(0, 10), LongWords.lineEnds(FloatArray(14) { 1f }, 3f, 10f, lineStart = false).toList())
     }
 
     @Test fun groupsStretchTheirChildren() {

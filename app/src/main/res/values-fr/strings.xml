@@ -71,6 +71,12 @@
     </plurals>
     <!-- A file's name, then what is wrong with it or what happened to it, as said of one file. %1$s may also list several names. -->
     <string name="file_problem">%1$s : %2$s</string>
+    <!-- A list of file names cut short, in place of the names in a message: %1$s lists the first few, %2$d counts the rest (always 2 or more). -->
+    <plurals name="names_and_more">
+        <item quantity="one">%1$s et %2$d autre</item>
+        <item quantity="many">%1$s et %2$d autres</item>
+        <item quantity="other">%1$s et %2$d autres</item>
+    </plurals>
     <plurals name="batch_nothing_to_number" tools:ignore="ImpliedQuantity">
         <item quantity="one">Il ne reste aucune page à numéroter dans %2$s : ce PDF a été laissé de côté.</item>
         <item quantity="many">Il ne reste aucune page à numéroter dans %1$d PDF, laissés de côté : %2$s.</item>
@@ -644,6 +650,21 @@
     <string name="start_over">Recommencer</string>
     <string name="start_over_title">Recommencer ?</string>
     <string name="not_saved_note">Pas encore enregistré. Recommencer le supprime : enregistrez-le d\'abord si vous voulez le conserver.</string>
+    <string name="mark_title">Filigrane Usugami</string>
+    <string name="mark_detail">Ajoute un petit « Usugami » dans le coin de chaque page, pour soutenir l\'application.</string>
+    <string name="mark_adjust">Taille et opacité du filigrane</string>
+    <string name="mark_size">Taille</string>
+    <string name="mark_opacity">Opacité</string>
+    <string name="mark_percent">%1$d %%</string>
+    <string name="mark_preview_description">Page 1 avec le filigrane Usugami</string>
+    <string name="mark_working">Mise à jour du filigrane…</string>
+    <string name="mark_adding">Ajout du filigrane Usugami…</string>
+    <string name="mark_failed">Impossible de modifier le filigrane Usugami. Vérifiez que l\'espace de stockage disponible est suffisant.</string>
+    <plurals name="mark_refused" tools:ignore="ImpliedQuantity">
+        <item quantity="one">La signature numérique de ce PDF n\'autorise aucune modification : il n\'a donc pas de filigrane Usugami.</item>
+        <item quantity="many">%d PDF ont une signature numérique qui n\'autorise aucune modification : ils n\'ont donc pas de filigrane Usugami.</item>
+        <item quantity="other">%d PDF ont une signature numérique qui n\'autorise aucune modification : ils n\'ont donc pas de filigrane Usugami.</item>
+    </plurals>
 
     <!-- Dialogs -->
     <string name="discard_title">Supprimer ces images ?</string>

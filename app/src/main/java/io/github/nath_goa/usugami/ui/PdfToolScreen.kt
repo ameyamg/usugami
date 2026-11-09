@@ -84,6 +84,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.keepScreenOn
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -154,6 +155,7 @@ fun PdfToolScreen(
     val views by vm.views.collectAsStateWithLifecycle()
     val batch by vm.batch.collectAsStateWithLifecycle()
     val batchProgress by vm.batchProgress.collectAsStateWithLifecycle()
+    val markProgress by vm.markProgress.collectAsStateWithLifecycle()
     // Word, PowerPoint, Excel and EPUB to PDF take documents instead of PDFs.
     val officeKind = tool.officeKind
     // A tool that also takes several PDFs or documents ([isBatch]) lists them, each with its own name and choices.
@@ -514,11 +516,24 @@ fun PdfToolScreen(
             showWorking = true
         }
         BackHandler {}
-        if (showWorking && officeKind != null) {
+        val marking = markProgress
+        if (showWorking && marking != null) {
+            // The PDFs are made: the Usugami mark goes on them, one after another when there are several.
+            AlertDialog(
+                onDismissRequest = {},
+                // The screen stays on while it shows, as for every job (see ProgressDialog).
+                modifier = Modifier.keepScreenOn(),
+                title = { Text(stringResource(R.string.mark_adding)) },
+                text = { if (marking.total > 1) BatchProgressText(marking) else LinearProgressIndicator(Modifier.fillMaxWidth()) },
+                confirmButton = {},
+                dismissButton = { TextButton(onClick = vm::cancel) { Text(stringResource(R.string.cancel)) } },
+            )
+        } else if (showWorking && officeKind != null) {
             OfficeProgressDialog(convertProgress, officeKind, onCancel = vm::cancel, many = many, batch = batchProgress)
         } else if (showWorking) {
             AlertDialog(
                 onDismissRequest = {},
+                modifier = Modifier.keepScreenOn(),
                 title = { Text(stringResource(if (many) R.string.pdf_working_many else R.string.pdf_working)) },
                 text = { if (many) BatchProgressText(batchProgress) else LinearProgressIndicator(Modifier.fillMaxWidth()) },
                 confirmButton = {},

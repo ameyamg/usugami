@@ -19,6 +19,7 @@ import io.github.nath_goa.usugami.core.Compressor
 import io.github.nath_goa.usugami.core.EditLayout
 import io.github.nath_goa.usugami.core.FileNames
 import io.github.nath_goa.usugami.core.InkItem
+import io.github.nath_goa.usugami.core.MarkStyle
 import io.github.nath_goa.usugami.core.PageItem
 import io.github.nath_goa.usugami.core.PageNumberPosition
 import io.github.nath_goa.usugami.core.PageNumberSize
@@ -35,6 +36,7 @@ import io.github.nath_goa.usugami.core.isOutOfSpace
 import io.github.nath_goa.usugami.data.AppLanguages
 import io.github.nath_goa.usugami.data.CompressJob
 import io.github.nath_goa.usugami.data.DownloadsCopy
+import io.github.nath_goa.usugami.data.MarkSetting
 import io.github.nath_goa.usugami.data.NothingToFlatten
 import io.github.nath_goa.usugami.data.NothingToNumber
 import io.github.nath_goa.usugami.data.NumberingJob
@@ -172,6 +174,10 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private val _batchProgress = MutableStateFlow<BatchProgress?>(null)
     val batchProgress = _batchProgress.asStateFlow()
 
+    /** Which of the PDFs just made is getting the Usugami mark, of how many, once a run puts it on them. */
+    private val _markProgress = MutableStateFlow<BatchProgress?>(null)
+    val markProgress = _markProgress.asStateFlow()
+
     /**
      * Redact PDF's boxes, on the pages as shown (see [RedactBox]), the page showing and the box
      * chosen (an index into the boxes, or -1). They survive process death in the saved state.
@@ -298,6 +304,28 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     val zipProgress = zipper.progress
     /** Share screens for ZIP files of the result's PDFs, once each is ready. */
     val zipShares = zipper.shares
+
+    /**
+     * The Usugami mark on the result's PDFs. A change rewrites them with the other file work, after a
+     * save under way, and the copies saved before are then of the PDFs as they were: saving again,
+     * all at once or each on its own, saves them anew.
+     */
+    private val marker = ResultMarker(
+        app, handle, viewModelScope, fileOps, result,
+        changed = { files ->
+            _result.value = files
+            setSavedFiles(emptySet())
+            _saved.value = false
+        },
+        failed = { message(strings.getString(R.string.mark_failed)) },
+        refused = { pluralMessage(R.plurals.mark_refused, it) },
+    )
+    /** Whether the PDFs made carry the Usugami mark, and its size and opacity: one setting for the whole app. */
+    val mark: StateFlow<MarkSetting> = marker.setting
+    /** The result's PDFs are being changed to [mark]: they can't be opened, shared or saved meanwhile. */
+    val marking: StateFlow<Boolean> = marker.working
+    /** The result's first page, which the result screen shows the mark on while it is changed. */
+    val markPreview: StateFlow<MarkPreview?> = marker.preview
 
     private var nextId = maxOf(System.currentTimeMillis(), (((inputs.value + locked.value).map { it.id } + documents.value.map { it.id }).maxOrNull() ?: 0) + 1)
     private var task: Job? = null
@@ -609,7 +637,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private fun sayOf(said: List<Pair<String, Said>>) {
         for (group in said.groupBy { it.second.many }.values) {
             val text = if (group.size == 1) group[0].second.one else group[0].second.many
-            message(strings.getString(R.string.file_problem, group.joinToString(", ") { it.first }, text))
+            message(strings.getString(R.string.file_problem, strings.listOfNames(group.map { it.first }), text))
         }
     }
 
@@ -955,7 +983,13 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
             message(strings.getString(R.string.pdf_invalid_pages))
             return
         }
-        process(fileName, listOf(input)) { check -> engine.split(input, groups, fileName, check) }
+        // Each PDF is named by its pages after the name typed. A single one is named as typed, as the
+        // field shows it, unless that is the PDF's own name, which it would then take.
+        val ownName = FileNames.sanitize(fileName, "Usugami") == defaultName(PdfTool.SPLIT, input)
+        val byPages = groups.size > 1 || ownName
+        // Their ZIP file is named as typed too, or else says they were split from it: "Report_split.zip".
+        val zipName = if (ownName) FileNames.withSuffix(fileName, "_split", "Usugami") else fileName
+        process(zipName, listOf(input)) { check -> engine.split(input, groups, fileName, byPages, check) }
     }
 
     fun runMerge(pageMode: Boolean, fileName: String) {
@@ -967,10 +1001,12 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
 
     fun runCompress(level: PdfCompression, fileName: String) {
         val input = inputs.value.singleOrNull() ?: return
+        // The engine keeps the original file when re-encoding would not make an unprotected PDF
+        // smaller. Say so, otherwise the result looks like nothing happened. A PDF with a password
+        // can't be kept (no tool's PDF has one), and without it may come out bigger: that is said too.
+        // Told of the PDF as it comes out, with the Usugami mark when it is on: the original isn't
+        // kept once the mark goes on it, which adds a little too.
         process(fileName, listOf(input), afterResult = { files ->
-            // The engine keeps the original file when re-encoding would not make an unprotected PDF
-            // smaller. Say so, otherwise the result looks like nothing happened. A PDF with a password
-            // can't be kept (no tool's PDF has one), and without it may come out bigger: that is said too.
             val file = files.single()
             if (!madeSmaller(file)) message(strings.getString(if (file.keptOriginal) R.string.pdf_no_reduction else R.string.pdf_not_smaller))
         }) { check -> listOf(engine.compress(input, level, fileName, check)) }
@@ -990,14 +1026,15 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
             return
         }
         val jobs = list.map { CompressJob(it, compressionOf(it), outputName(PdfTool.COMPRESS, it)) }
-        // Those not made smaller and not kept as they were: with a password, as in runCompress. A PDF
-        // kept says so under its name.
-        var notSmaller = emptyList<String>()
-        processEach("Compressed_PDFs", list.map { it.name }, list, afterResult = {
-            if (notSmaller.isNotEmpty()) message(strings.getQuantityString(R.plurals.batch_not_smaller, notSmaller.size, notSmaller.size, notSmaller.joinToString(", ")))
+        // Those not made smaller and not kept as they were, as they come out (see runCompress), by the
+        // name of the PDF each was made of. A PDF kept says so under its name.
+        val names = HashMap<File, String>()
+        processEach("Compressed_PDFs", list.map { it.name }, list, afterResult = { files ->
+            val notSmaller = files.filter { !it.keptOriginal && !madeSmaller(it) }.mapNotNull { names[it.file] }
+            if (notSmaller.isNotEmpty()) message(strings.getQuantityString(R.plurals.batch_not_smaller, notSmaller.size, notSmaller.size, strings.listOfNames(notSmaller)))
         }) { check, onNext ->
             engine.compressEach(jobs, check, onNext).also { outcomes ->
-                notSmaller = outcomes.withIndex().filter { (_, outcome) -> outcome.getOrNull()?.let { !it.keptOriginal && !madeSmaller(it) } == true }.map { list[it.index].name }
+                for ((i, outcome) in outcomes.withIndex()) outcome.getOrNull()?.let { names[it.file] = list[i].name }
             }
         }
     }
@@ -1569,13 +1606,13 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         names: List<String>,
         sources: List<PdfInput>,
         documents: List<OfficeInput> = emptyList(),
-        afterResult: () -> Unit = {},
+        afterResult: (List<PdfFile>) -> Unit = {},
         block: (check: () -> Unit, onNext: (Int) -> Unit) -> List<Result<PdfFile>>,
     ) {
         var failures = emptyList<Pair<String, Throwable>>()
-        val afterAll: (List<PdfFile>) -> Unit = {
+        val afterAll: (List<PdfFile>) -> Unit = { files ->
             reportFailures(failures)
-            afterResult()
+            afterResult(files)
         }
         process(name, sources, documents, afterAll) { check ->
             val outcomes = block(check) { i ->
@@ -1606,7 +1643,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         }
         sayOf(reasons)
         fun named(@PluralsRes res: Int, names: List<String>) {
-            if (names.isNotEmpty()) message(strings.getQuantityString(res, names.size, names.size, names.joinToString(", ")))
+            if (names.isNotEmpty()) message(strings.getQuantityString(res, names.size, names.size, strings.listOfNames(names)))
         }
         named(R.plurals.batch_nothing_to_number, nothingToNumber)
         named(R.plurals.batch_nothing_to_flatten, nothingToFlatten)
@@ -1654,7 +1691,17 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
                     forgetDocuments(documentsMissing)
                     return@launch
                 }
-                val files = withContext(fileOps) { block { job.ensureActive() } }
+                // The Usugami mark goes on before the PDFs show, while the progress still does.
+                val files = withContext(fileOps) {
+                    val made = block { job.ensureActive() }
+                    try {
+                        marker.markMade(made, { job.ensureActive() }) { index, count -> _markProgress.value = BatchProgress(index + 1, count, made[index].name) }
+                    } catch (e: CancellationException) {
+                        // Cancelled meanwhile, they aren't the result: they go, as the engine's own do.
+                        made.forEach { it.file.delete() }
+                        throw e
+                    }
+                }
                 _saved.value = false
                 resultPutAway = false
                 setSavedFiles(emptySet())
@@ -1702,6 +1749,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         _processing.value = false
         _convertProgress.value = null
         _batchProgress.value = null
+        _markProgress.value = null
         task = null
         handle.remove<Boolean>(KEY_MAKING)
     }
@@ -1721,6 +1769,20 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private fun putAwayResult() {
         if (_result.value != null) resultPutAway = true
         _result.value = null
+        marker.stop()
+    }
+
+    /**
+     * Puts the Usugami mark on the result's PDFs and those made from now on, or takes it off. Not while
+     * the PDFs or a ZIP file of them are being saved, which would save them half changed.
+     */
+    fun setMark(on: Boolean) {
+        if (!_saving.value && !zipper.busy) marker.setOn(on)
+    }
+
+    /** Gives the Usugami mark [style], on the result's PDFs too; as [setMark], not while saving. */
+    fun setMarkStyle(style: MarkStyle) {
+        if (!_saving.value && !zipper.busy) marker.setStyle(style)
     }
 
     fun startOver() {
@@ -1876,14 +1938,16 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
 
     private fun resultCleared(count: Int) {
         _result.value = null
+        marker.stop()
         message(strings.getQuantityString(R.plurals.msg_result_cleared, count))
     }
 
     fun saveToDownloads() {
         val files = _result.value ?: return
         if (!canSaveToDownloads) return
-        // A second tap that lands before the button is turned off does nothing.
-        if (_saving.value) return
+        // A second tap that lands before the button is turned off does nothing, as does one that lands
+        // as the Usugami mark starts changing.
+        if (_saving.value || marker.working.value) return
         // The PDFs copied so far: when a later one fails, these are saved all the same.
         val done = ArrayList<PdfFile>()
         save(partial = { done }) {
@@ -1901,7 +1965,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     /** Saves [file], one of the result's PDFs, into Downloads on its own. */
     fun saveOneToDownloads(file: PdfFile) {
         val files = _result.value ?: return
-        if (!canSaveToDownloads || _saving.value) return
+        if (!canSaveToDownloads || _saving.value || marker.working.value) return
         val one = files.firstOrNull { it.file == file.file } ?: return
         save(listOf(one)) {
             // Saved there already, with the others or on its own, it only says so again.
@@ -2049,6 +2113,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     /** Makes one ZIP file of the result's PDFs and shares it (see [zipShares]). */
     fun shareZip() {
         val files = _result.value ?: return
+        if (marker.working.value) return
         zipper.share(files, resultName)
     }
 
@@ -2107,12 +2172,8 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         return when (tool) {
             // A converted document keeps its name: Report.docx becomes Report.pdf.
             PdfTool.WORD, PdfTool.POWERPOINT, PdfTool.EXCEL, PdfTool.EPUB -> documents.value.firstOrNull()?.name?.let(FileNames::baseName) ?: "Usugami"
-            PdfTool.SPLIT -> {
-                // Each part adds its number and pages after this name: room is left for the longest
-                // ending a PDF of this many pages can give, so a long name is cut here, not its "_split".
-                val last = (input?.pageCount ?: 1).coerceAtLeast(1) - 1
-                FileNames.withSuffix(base, "_split", "Usugami", spare = PdfToolsEngine.partSuffix(last, listOf(last)).length)
-            }
+            // Each part adds its pages after this name: Report_p3-5.
+            PdfTool.SPLIT -> FileNames.sanitize(base, "Usugami")
             PdfTool.COMPRESS -> named("_compressed")
             PdfTool.MERGE -> "Merged_PDF"
             PdfTool.ROTATE -> named("_rotated")

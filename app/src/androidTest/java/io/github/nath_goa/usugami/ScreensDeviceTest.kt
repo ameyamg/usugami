@@ -68,6 +68,7 @@ import io.github.nath_goa.usugami.ui.Motion
 import io.github.nath_goa.usugami.ui.PdfToolsViewModel
 import io.github.nath_goa.usugami.ui.SplitMode
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
@@ -88,8 +89,11 @@ import org.junit.Test
 import java.io.File
 import java.io.InputStream
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.math.sin
 
 /**
@@ -2027,6 +2031,43 @@ class ScreensDeviceTest {
         return FileProvider.getUriForFile(app, "${app.packageName}.files", file)
     }
 
+    /**
+     * While a tool shows its progress the screen stays on, and it can go off again once the tool is
+     * cancelled. The tool's file work is held meanwhile, so its progress shows however fast the phone is.
+     */
+    @Test fun theScreenStaysOnWhileAToolWorks() {
+        val activity = launch()
+        val pdfVm = openToolWithAlpha(R.string.tool_compress, activity)
+        assertFalse("Not kept on before", keepsScreenOn())
+        val held = holdFileWork(pdfVm)
+        try {
+            onMain { pdfVm.runCompress(PdfCompression.EXTREME, "held") }
+            find("the progress") { it.says(app.getString(R.string.pdf_working)) }
+            assertTrue("Kept on while it works", keepsScreenOn())
+            onMain { pdfVm.cancel() }
+        } finally {
+            held.countDown()
+        }
+        waitUntil("the screen to be let go") { !keepsScreenOn() }
+    }
+
+    /** Holds [vm]'s file work, done on one thread in turn, until the latch it returns is counted down. */
+    private fun holdFileWork(vm: PdfToolsViewModel): CountDownLatch {
+        val fileOps = PdfToolsViewModel::class.java.getDeclaredField("fileOps").apply { isAccessible = true }.get(vm) as CoroutineDispatcher
+        val held = CountDownLatch(1)
+        fileOps.dispatch(EmptyCoroutineContext, Runnable { held.await(30, TimeUnit.SECONDS) })
+        return held
+    }
+
+    /**
+     * Whether Android keeps the screen on for a window of Usugami's: its window manager then holds a wake
+     * lock for Usugami, called WindowManager, or WindowManager/displayId:0 on newer Android, one per display.
+     */
+    private fun keepsScreenOn(): Boolean {
+        val dump = ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand("dumpsys power")).bufferedReader().use { it.readText() }
+        return dump.lines().any { ("'WindowManager'" in it || "'WindowManager/" in it) && "WorkSource{${app.applicationInfo.uid}" in it }
+    }
+
     /** A PDF shared while a tool makes one waits for it; the PDF made isn't saved, so Usugami asks. */
     @Test fun filesSharedWhileAPdfIsMadeWaitForIt() {
         val activity = launch()
@@ -2299,7 +2340,7 @@ class ScreensDeviceTest {
     @Test fun severalPdfsAreSharedOrSavedAsOneZip() {
         val activity = launch()
         val pdfVm = openToolWithAlpha(R.string.tool_split, activity)
-        onMain { pdfVm.runSplit(SplitMode.EVERY_PAGE, "", combine = false, fileName = "alpha_split") }
+        onMain { pdfVm.runSplit(SplitMode.EVERY_PAGE, "", combine = false, fileName = "alpha") }
         find("the result screen") { it.says(app.getString(R.string.result_heading_many)) }
         val files = onMain { pdfVm.result.value!! }
         assertEquals(3, files.size)
@@ -2317,7 +2358,9 @@ class ScreensDeviceTest {
         val uri = IntentCompat.getParcelableExtra(send, Intent.EXTRA_STREAM, Uri::class.java)!!
         assertEquals("alpha_split.zip", uri.lastPathSegment)
         assertZipHolds(files, app.contentResolver.openInputStream(uri)!!.use(::zipEntries))
-        // Sharing isn't saving.
+        // Sharing isn't saving. The note is further down, below the Usugami watermark's switch: the
+        // screen is scrolled once the menu, whose window takes the screen reader's place, has gone.
+        waitUntil("the menu to close") { nodes().none { it.says(app.getString(R.string.zip_share)) } }
         findBelow("the note that the PDFs aren't saved") { it.says(app.getString(R.string.not_saved_note)) }
 
         // Save writes the ZIP file into the document the "Save as" screen made, and counts as saving.
