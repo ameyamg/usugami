@@ -6,6 +6,11 @@
     <string name="home_subtitle">आपकी फ़ाइलें इसी फ़ोन पर रहती हैं। न विज्ञापन, न खाता, न अपलोड।</string>
     <string name="tool_images">इमेज से PDF</string>
     <string name="tool_images_detail">कैमरे से स्कैन, JPG और PNG इमेज से PDF, टेक्स्ट पहचान के साथ</string>
+    <!-- The large card at the top of Home: take photos of a paper document, or pick images of one, then crop and clean up each page. -->
+    <string name="scan_title">डॉक्यूमेंट स्कैन करें</string>
+    <string name="scan_detail">फ़ोटो लें या इमेज चुनें, फिर उन्हें क्रॉप और साफ़ करें</string>
+    <!-- Picks images from the phone's gallery: nothing leaves the phone. -->
+    <string name="scan_upload">इमेज चुनें</string>
     <string name="tool_split">PDF स्प्लिट करें</string>
     <string name="tool_split_detail">पेज निकालें या छोटी फ़ाइलों में बांटें</string>
     <string name="tool_merge">PDF मर्ज करें</string>
@@ -266,6 +271,31 @@
         <item quantity="one">%2$d में से %1$d स्लाइड</item>
         <item quantity="other">%2$d में से %1$d स्लाइड</item>
     </plurals>
+    <!-- Excel to PDF. Excel is the name of Microsoft's app, kept as it is; .xlsx and .xls are file
+         extensions. A workbook is an Excel file; a sheet is one of its tabs. -->
+    <string name="tool_excel">Excel से PDF</string>
+    <string name="tool_excel_detail">स्प्रेडशीट (.xlsx), शीट दर शीट</string>
+    <string name="pick_excel">Excel फ़ाइलें चुनें</string>
+    <string name="add_excel">Excel फ़ाइलें जोड़ें</string>
+    <string name="document_excel">Excel वर्कबुक</string>
+    <string name="office_note_excel">हर शीट नए पेज से शुरू होती है, जैसे Excel में प्रिंट होने पर; छिपी हुई शीट छोड़ दी जाती हैं। वर्कबुक के फ़ॉन्ट की जगह आपके फ़ोन के फ़ॉन्ट इस्तेमाल होते हैं, और चार्ट छोड़ दिए जाते हैं।</string>
+    <string name="office_legacy_excel">यह पुरानी Excel फ़ाइल (.xls) है। इसे Excel या किसी दूसरे ऐप में .xlsx के रूप में सेव करके फिर से कोशिश करें।</string>
+    <string name="office_legacy_excel_many">ये पुरानी Excel फ़ाइलें (.xls) हैं। इन्हें Excel या किसी दूसरे ऐप में .xlsx के रूप में सेव करके फिर से कोशिश करें।</string>
+    <string name="office_encrypted_excel">यह फ़ाइल पासवर्ड से सुरक्षित है। Excel में पासवर्ड हटाएं और फ़ाइल सेव करके फिर से कोशिश करें।</string>
+    <string name="office_encrypted_excel_many">ये फ़ाइलें पासवर्ड से सुरक्षित हैं। Excel में पासवर्ड हटाएं और फ़ाइलें सेव करके फिर से कोशिश करें।</string>
+    <string name="office_not_excel">यह Excel वर्कबुक (.xlsx) नहीं है, या फ़ाइल खराब है।</string>
+    <string name="office_not_excel_many">ये Excel वर्कबुक (.xlsx) नहीं हैं, या फ़ाइलें खराब हैं।</string>
+    <string name="office_no_sheets">इस वर्कबुक में बदलने के लिए कुछ नहीं है। छिपी हुई शीट छोड़ दी जाती हैं।</string>
+    <string name="office_no_sheets_many">इन वर्कबुक में बदलने के लिए कुछ नहीं है। छिपी हुई शीट छोड़ दी जाती हैं।</string>
+    <string name="office_too_large">यह वर्कबुक फ़ोन पर बदलने के लिए बहुत बड़ी है। Excel या किसी दूसरे ऐप में, जिस हिस्से की ज़रूरत है उसके लिए प्रिंट एरिया सेट करें और फिर से कोशिश करें।</string>
+    <string name="office_too_large_many">ये वर्कबुक फ़ोन पर बदलने के लिए बहुत बड़ी हैं। Excel या किसी दूसरे ऐप में, जिस हिस्से की ज़रूरत है उसके लिए प्रिंट एरिया सेट करें और फिर से कोशिश करें।</string>
+    <!-- Excel to PDF's choices. "As in the file" keeps the paper size or orientation each sheet was set to print on. -->
+    <string name="sheet_as_file">फ़ाइल के अनुसार</string>
+    <string name="sheet_fit_width">कॉलम को पेज की चौड़ाई में फ़िट करें</string>
+    <string name="sheet_fit_width_on">चौड़ी शीट छोटी की जाती हैं ताकि उनके कॉलम पेज की चौड़ाई में समा जाएं, लेकिन कभी आधे साइज़ से छोटी नहीं।</string>
+    <string name="sheet_fit_width_off">जो कॉलम पेज में नहीं समाते, वे अगले पेजों पर चले जाते हैं, जैसे Excel में प्रिंट होने पर।</string>
+    <string name="sheet_gridlines">ग्रिडलाइन</string>
+    <string name="sheet_gridlines_detail">सेल के बीच हल्की स्लेटी लाइनें, जैसी स्क्रीन पर दिखती हैं। बॉर्डर हमेशा दिखते हैं, और वे ग्रिडलाइन भी जिन्हें शीट में प्रिंट करने के लिए सेट किया गया है।</string>
     <string name="tool_delete_pages">पेज हटाएं</string>
     <string name="tool_delete_pages_detail">जिन पेजों की ज़रूरत नहीं, उन्हें हटाएं</string>
     <string name="tool_reorganize">PDF के पेज व्यवस्थित करें</string>
@@ -446,8 +476,8 @@
     <!-- Cropping a page out of a photo -->
     <string name="crop_title">पेज क्रॉप करें</string>
     <!-- Above the photo when the page was found on it automatically. -->
-    <string name="crop_found">Usugami को पेज मिल गया। कोनों को ठीक करने के लिए उन्हें खींचें।</string>
-    <string name="crop_not_found">कोनों को खींचकर पेज के कोनों पर रखें।</string>
+    <string name="crop_found">Usugami को पेज मिल गया। उसे ठीक करने के लिए कोनों या किनारों को खींचें।</string>
+    <string name="crop_not_found">कोनों या किनारों को खींचकर पेज के किनारों पर रखें।</string>
     <string name="crop_not_a_page">ये कोने पेज नहीं बनाते: हर कोने को पेज के किसी कोने पर रखें।</string>
     <string name="crop_reset">रीसेट करें</string>
     <string name="crop_whole">पूरी इमेज</string>
@@ -462,12 +492,42 @@
     <string name="crop_corner_top_right">ऊपर दायां कोना</string>
     <string name="crop_corner_bottom_right">नीचे दायां कोना</string>
     <string name="crop_corner_bottom_left">नीचे बायां कोना</string>
+    <!-- Handles in the middle of each side of the page's outline: dragging one moves that whole side. -->
+    <string name="crop_side_top">ऊपरी किनारा</string>
+    <string name="crop_side_right">दायां किनारा</string>
+    <string name="crop_side_bottom">निचला किनारा</string>
+    <string name="crop_side_left">बायां किनारा</string>
+    <!-- Turn the image (and the page's outline on it) a quarter turn. -->
+    <string name="crop_rotate_left">बाईं ओर घुमाएं</string>
+    <string name="crop_rotate_right">दाईं ओर घुमाएं</string>
+    <!-- Goes on from cropping the page to choosing its look; during a scan of several images, also on to the next image. -->
+    <string name="crop_next">आगे बढ़ें</string>
+    <!-- The crop screen's close button while several uploaded images are cropped one after another: the images not cropped yet stay as they are. -->
+    <string name="crop_stop">क्रॉप करना बंद करें</string>
     <string name="crop_failed">पेज क्रॉप नहीं हो सका। उसे पहले जैसा ही रखा गया है।</string>
+    <!-- The second step of cropping a page: its look, brightness and contrast. -->
+    <string name="filter_title">फ़िल्टर</string>
+    <string name="filter_preview_description">पेज, जैसा वह PDF में दिखेगा</string>
+    <string name="filter_brightness">ब्राइटनेस</string>
+    <string name="filter_contrast">कंट्रास्ट</string>
+    <!-- Puts the slider back in the middle, at 0. -->
+    <string name="filter_reset_brightness">ब्राइटनेस रीसेट करें</string>
+    <string name="filter_reset_contrast">कंट्रास्ट रीसेट करें</string>
+    <!-- Under the title while several uploaded images are cropped one after another, e.g. "Page 2 of 5". -->
+    <string name="scan_place">%2$d में से पेज %1$d</string>
+    <!-- What a screen reader says as each image of such a scan comes in: the step's name (Crop page, or Filters), then which image it is, e.g. "Crop page, Page 2 of 5". -->
+    <string name="scan_pane_title">%1$s, %2$s</string>
     <string name="look_title">रूप</string>
     <string name="look_original">मूल</string>
     <string name="look_enhanced">बेहतर</string>
     <string name="look_grayscale">ग्रेस्केल</string>
     <string name="look_black_white">ब्लैक एंड व्हाइट</string>
+    <!-- Brighter, with shadows softened and the colours kept close to the photo's. -->
+    <string name="look_lighten">उजला</string>
+    <!-- The strongest clean-up: whiter paper, richer colours, darker and crisper print. -->
+    <string name="look_super_enhanced">बहुत बेहतर</string>
+    <!-- Black and white that prints lighter, to save ink or toner: thin print, large dark areas left hollow. -->
+    <string name="look_ink_saver">स्याही बचत</string>
     <string name="look_all_pages">सभी पेजों पर लागू करें</string>
 
     <!-- Options -->
@@ -614,6 +674,7 @@
     <string name="msg_out_of_space">स्टोरेज में काफ़ी खाली जगह नहीं है</string>
     <string name="msg_unknown_error">कोई अनचाही गड़बड़ी हुई</string>
     <string name="msg_no_pdf_app">इस फ़ोन पर ऐसा कोई ऐप नहीं है जो PDF खोल सके।</string>
+    <string name="msg_no_zip_app">इस फ़ोन पर ऐसा कोई ऐप नहीं है जो ZIP फ़ाइलें खोल सके।</string>
     <string name="msg_no_share_app">इस फ़ोन पर ऐसा कोई ऐप नहीं है जो PDF शेयर कर सके।</string>
     <string name="msg_no_file_picker">इस फ़ोन पर सेव करने के लिए फ़ाइल चुनने वाला कोई ऐप नहीं है।</string>
     <string name="msg_no_picker">इस फ़ोन पर फ़ाइल चुनने वाला कोई ऐप नहीं है।</string>
@@ -627,6 +688,19 @@
         <item quantity="other">PDF फ़ाइलों को अस्थायी स्टोरेज से हटा दिया गया। कृपया उन्हें फिर से बनाएं।</item>
     </plurals>
 
+    <!-- Recent files: the files saved with Usugami, newest first, on Home under Scan document and on a screen of their own, to open or share again. -->
+    <string name="recent_title">हाल की फ़ाइलें</string>
+    <string name="recent_see_all">सभी देखें</string>
+    <!-- Takes a file off the list. The file itself isn't deleted. -->
+    <string name="recent_remove">लिस्ट से हटाएं</string>
+    <string name="recent_clear">लिस्ट खाली करें</string>
+    <string name="recent_clear_title">लिस्ट खाली करें?</string>
+    <string name="recent_clear_body">फ़ाइलें वहीं रहेंगी जहां आपने उन्हें सेव किया था। सिर्फ़ यह लिस्ट खाली होगी।</string>
+    <string name="recent_empty">आप जो फ़ाइलें सेव करेंगे, वे यहां दिखेंगी, ताकि आप उन्हें फिर से खोल और शेयर कर सकें।</string>
+    <!-- A listed file Usugami can no longer reach: its access to the file has ended, or the place it is in (an SD card, say) is out of reach. %1$s is the file's name. -->
+    <string name="recent_lost_title">यह फ़ाइल नहीं खुल सकती</string>
+    <string name="recent_lost_body">Usugami अब %1$s को नहीं खोल सकता। अगर फ़ाइल अब भी मौजूद है, तो आप उसे अपने फ़ोन के Files ऐप से ढूंढ सकते हैं।</string>
+
     <!-- Searching for a tool on Home -->
     <string name="home_search_hint">टूल खोजें</string>
     <string name="home_search_clear">खोज मिटाएं</string>
@@ -636,8 +710,10 @@
     </plurals>
     <string name="home_search_none">\"%1$s\" से मेल खाता कोई टूल नहीं मिला</string>
     <string name="search_keywords_images">फ़ोटो, तस्वीर, स्कैन, स्कैनर, कैमरा, गैलरी, डॉक्यूमेंट, ब्लैक एंड व्हाइट, photo, image, scan, scanner, camera, JPEG, OCR</string>
+    <string name="search_keywords_scan">स्कैन, स्कैनर, कैमरा, फ़ोटो, डॉक्यूमेंट, दस्तावेज़, कागज़, रसीद, बिल, क्रॉप, फ़िल्टर, ब्राइटनेस, चमक, कंट्रास्ट, ब्लैक एंड व्हाइट, scan, scanner, CamScanner, camera, photo, document, receipt, crop, enhance, filter, brightness, contrast</string>
     <string name="search_keywords_word">डॉक्यूमेंट, दस्तावेज़, doc, docx, document, Office</string>
     <string name="search_keywords_powerpoint">स्लाइड, प्रेज़ेंटेशन, ppt, pptx, slides, presentation</string>
+    <string name="search_keywords_excel">स्प्रेडशीट, शीट, टेबल, तालिका, वर्कबुक, सेल, xls, xlsx, spreadsheet, sheet, table, workbook, cells, Office, Google Sheets</string>
     <string name="search_keywords_merge">जोड़ें, मिलाएं, एक फ़ाइल, merge, combine, join</string>
     <string name="search_keywords_split">अलग करें, बांटें, निकालें, split, separate, extract</string>
     <string name="search_keywords_reorganize">क्रम बदलें, खिसकाएं, खाली पेज, reorder, rearrange, organize</string>

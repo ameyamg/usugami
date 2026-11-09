@@ -40,6 +40,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.nath_goa.usugami.R
+import io.github.nath_goa.usugami.core.RecentFile
 import io.github.nath_goa.usugami.core.SharedFiles
 import io.github.nath_goa.usugami.core.SharedKind
 import io.github.nath_goa.usugami.core.ZipArchive
@@ -48,6 +49,7 @@ import io.github.nath_goa.usugami.data.AppLanguages
 import io.github.nath_goa.usugami.data.Appearance
 import io.github.nath_goa.usugami.data.LegalDocument
 import io.github.nath_goa.usugami.data.PdfSaver
+import io.github.nath_goa.usugami.data.RecentFiles
 import kotlinx.coroutines.flow.merge
 
 @Composable
@@ -70,6 +72,9 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     val compression by vm.compression.collectAsStateWithLifecycle()
     val pendingImports by vm.pendingImports.collectAsStateWithLifecycle()
     val crop by vm.crop.collectAsStateWithLifecycle()
+    val openingCrop by vm.openingCrop.collectAsStateWithLifecycle()
+    val cameraOpen by vm.cameraOpen.collectAsStateWithLifecycle()
+    val scan by vm.scan.collectAsStateWithLifecycle()
     val cropping by vm.cropping.collectAsStateWithLifecycle()
     val progress by vm.progress.collectAsStateWithLifecycle()
     val cancelling by vm.cancelling.collectAsStateWithLifecycle()
@@ -90,6 +95,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     val pdfInputs by pdfVm.inputs.collectAsStateWithLifecycle()
     val pdfLocked by pdfVm.locked.collectAsStateWithLifecycle()
     val pdfImporting by pdfVm.importing.collectAsStateWithLifecycle()
+    val recent = remember(context) { RecentFiles.of(context) }
+    val recentFiles by recent.files.collectAsStateWithLifecycle()
 
     var route by rememberSaveable { mutableStateOf(if (vm.items.value.isNotEmpty()) "images" else "home") }
 
@@ -131,7 +138,7 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     var confirmShare by rememberSaveable { mutableStateOf(false) }
     // The tool showing was opened from Choose a tool, which it goes back to.
     var toolFromShare by rememberSaveable { mutableStateOf(false) }
-    // The converter showing was opened for Word, PowerPoint or EPUB files shared to Usugami.
+    // The converter showing was opened for Word, PowerPoint, Excel or EPUB files shared to Usugami.
     var docsFromShare by rememberSaveable { mutableStateOf(false) }
     // Said once that the files shared open when the PDF being made is done.
     var toldShareWaits by rememberSaveable { mutableStateOf(false) }
@@ -172,9 +179,38 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { vm.addImages(it) }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { vm.addImages(it) }
+    // The editor was opened by Home's Scan document, whose scan is still going on.
+    var scanFromHome by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(route) {
+        // Files shared to Usugami meanwhile open their tool, or Choose a tool, over the scan, and Back
+        // from there comes back to it: it is still the scan from Home.
+        val sharedOver = (route == "share" || isPdfToolRoute(route)) && vm.scanUnderWay()
+        if (route != "images" && !sharedOver) scanFromHome = false
+    }
+    // Once the camera and the crop screen have closed, the scan from Home is over. With a page in the
+    // editor, the editor is as it always is from then on, also when the user removes that page while
+    // it is still being cropped. With no page, once nothing is still being added, it goes back to Home
+    // rather than to an empty editor: the camera closed without a photo, the photo discarded, or
+    // nothing picked could be added. The view model is asked as it is now: its flows reach the screen
+    // one at a time.
+    LaunchedEffect(scanFromHome, route, items.isEmpty(), pendingImports, openingCrop, crop, scan, cameraOpen) {
+        if (!scanFromHome || route != "images" || vm.scanUnderWay()) return@LaunchedEffect
+        if (vm.items.value.isNotEmpty()) scanFromHome = false else if (vm.pendingImports.value == 0) route = "home"
+    }
+    // Scan document's Upload images: the images picked are added, and cropped one after another.
+    // Nothing picked leaves Home as it was.
+    val scanPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+        if (uris.isNotEmpty()) {
+            vm.scanImages(uris)
+            if (route == "home") {
+                route = "images"
+                scanFromHome = true
+            }
+        }
+    }
     // The phone's own camera app takes the photos, into a file Usugami gives it: Usugami needs no
-    // camera permission.
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { vm.photoTaken(it) }
+    // camera permission. Also when Android closed Usugami while it was open, this comes back.
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture(), vm::photoTaken)
     // The PDF tool whose picker is open. What is picked goes to that tool while it shows, and not to
     // Home or another tool when the user left before the picker covered Usugami.
     var pickingFor by rememberSaveable { mutableStateOf<String?>(null) }
@@ -192,7 +228,7 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     val picturePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null && route == pickingFor) pdfVm.addPicture(uri)
     }
-    // For Word, PowerPoint and EPUB to PDF: the tool showing says which kind of file it takes.
+    // For Word, PowerPoint, Excel and EPUB to PDF: the tool showing says which kind of file it takes.
     val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val kind = PdfTool.entries.firstOrNull { it.name.equals(route, ignoreCase = true) }?.officeKind
         if (kind != null && route == pickingFor) pdfVm.addDocuments(uris, kind)
@@ -226,6 +262,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> opener.covered()
                 Lifecycle.Event.ON_RESUME -> opener.back()
+                // Files may be deleted, moved or renamed while Usugami is away.
+                Lifecycle.Event.ON_STOP -> recent.checkAgain()
                 else -> Unit
             }
         }
@@ -249,15 +287,48 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
 
     fun openSourceCode() = launch(R.string.msg_no_browser) { context.startActivity(Intent(Intent.ACTION_VIEW, SOURCE_CODE_URL.toUri())) }
 
-    /** Opens the camera app to take a photo for a page; it is added and cropped when it comes back. */
-    fun takePhoto() {
-        if (!opener.open()) return
+    // The listed file Usugami found it can no longer open, whose dialog shows.
+    var lostFile by rememberSaveable { mutableStateOf<String?>(null) }
+
+    /**
+     * Starts another app's screen for a listed file with [intent], as [launch] does. When Usugami's
+     * access to the file has ended, the system refuses to pass it on: a dialog says so instead.
+     */
+    fun launchRecent(file: RecentFile, @StringRes noApp: Int, intent: () -> Intent) {
+        if (file.uri in recent.unreachable.value) {
+            lostFile = file.uri
+            return
+        }
+        launch(noApp) {
+            try {
+                context.startActivity(intent())
+            } catch (_: SecurityException) {
+                opener.notOpened()
+                lostFile = file.uri
+            }
+        }
+    }
+
+    val recentActions = RecentFileActions(
+        open = { file -> launchRecent(file, if (file.type == ZipArchive.MIME) R.string.msg_no_zip_app else R.string.msg_no_pdf_app) { recent.viewIntent(file) } },
+        share = { file -> launchRecent(file, R.string.msg_no_share_app) { recent.shareIntent(file) } },
+        remove = recent::remove,
+    )
+
+    /**
+     * Opens the camera app to take a photo for a page; it is added and cropped when it comes back.
+     * Returns whether it opened.
+     */
+    fun takePhoto(): Boolean {
+        if (!opener.open()) return false
         try {
             camera.launch(vm.newCapture())
+            return true
         } catch (_: ActivityNotFoundException) {
             opener.notOpened()
             vm.photoTaken(false)
             vm.showMessage(R.string.msg_no_camera)
+            return false
         }
     }
 
@@ -314,7 +385,7 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
         route = afterTool()
     }
 
-    // PDFs, Word, PowerPoint and EPUB files shared to Usugami open where they belong (see [sharedRoute]).
+    // PDFs, Word, PowerPoint, Excel and EPUB files shared to Usugami open where they belong (see [sharedRoute]).
     // Leaving a PDF tool discards its PDF, so a tool with work that isn't saved asks first, and a PDF
     // being made is waited for. Once copied in, the files go to the tool that opened for them.
     LaunchedEffect(sharedFiles, sharing, route, pdfResult != null, pdfProcessing, progress != null, pdfImporting, confirmShare, stayOnPdf) {
@@ -358,15 +429,17 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     var showConvertSheet by rememberSaveable { mutableStateOf(false) }
 
     // Which screen is showing. The result screens sit one level deeper than their editors, which
-    // sit one level deeper than home, and so do Settings ("settings"), About ("settings/about") and
-    // the texts About opens ("settings/about/privacy"); that depth decides the slide direction.
+    // sit one level deeper than home, and so do Recent files ("recent"), Settings ("settings"), About
+    // ("settings/about") and the texts About opens ("settings/about/privacy"); that depth decides the
+    // slide direction.
     // A tool opened from Choose a tool ("share") sits one level deeper than it. The crop screen sits
-    // beside the editor's result.
+    // beside the editor's result; a scan of images picked keeps it showing while its next image is
+    // awaited.
     val screen = when {
-        route == "home" || route.startsWith("settings") || route == "share" -> route
+        route == "home" || route.startsWith("settings") || route == "share" || route == "recent" -> route
         route == "images" -> when {
             result != null -> "images/result"
-            crop != null -> "images/crop"
+            crop != null || scan != null -> "images/crop"
             else -> "images"
         }
         else -> (if (toolFromShare) "share/" else "") + if (pdfResult == null) route else "$route/result"
@@ -387,6 +460,10 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
         val active = transition.targetState == EnterExitState.Visible
         val screenSnackbar = if (active) snackbar else idleSnackbar
         Box(if (active) Modifier else Modifier.clearAndSetSemantics {}) {
+            if (current == "home" || current == "recent") {
+                // The files listed are looked over while they show, once each time Usugami comes back.
+                LaunchedEffect(recent, lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { recent.check() } }
+            }
             if (current == "home" || current.startsWith("images")) {
                 // Once a PDF tool's screens have gone (the user went home, or shared images opened the
                 // editor), nothing of that tool can be shown again: opening a tool starts afresh. Its
@@ -403,6 +480,22 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                         snackbar = screenSnackbar,
                         query = homeQuery,
                         onQueryChange = { homeQuery = it },
+                        // The camera opens over the editor, where its photo is added.
+                        onScanPhoto = {
+                            if (takePhoto()) {
+                                vm.newScan()
+                                route = "images"
+                                scanFromHome = true
+                            }
+                        },
+                        onScanUpload = {
+                            launch(R.string.msg_no_picker) {
+                                scanPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }
+                        },
+                        recentFiles = recentFiles,
+                        recentActions = recentActions,
+                        onAllRecentFiles = { route = "recent" },
                         onImages = { route = "images" },
                         onTool = { tool ->
                             pdfVm.reset()
@@ -414,6 +507,16 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                             route = tool.name.lowercase()
                         },
                         onSettings = { route = "settings" },
+                    )
+                }
+                current == "recent" -> {
+                    BackHandler(enabled = active) { route = "home" }
+                    RecentFilesScreen(
+                        files = recentFiles,
+                        snackbar = screenSnackbar,
+                        actions = recentActions,
+                        onClear = recent::clear,
+                        onBack = { route = "home" },
                     )
                 }
                 current == "settings" -> {
@@ -506,23 +609,21 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                     )
                 }
                 current == "images/crop" -> {
-                    val session = freezeWhen(!active, crop)
-                    val item = freezeWhen(!active, session?.let { s -> items.firstOrNull { it.id == s.itemId } })
-                    BackHandler(enabled = active) { vm.closeCrop() }
-                    if (session != null) {
-                        CropScreen(
-                            session = session,
-                            item = item,
-                            pageCount = items.size,
-                            snackbar = screenSnackbar,
-                            actions = CropActions(
-                                done = { corners, look, allPages -> vm.finishCrop(corners, look, allPages) },
-                                // A second tap, once the first has closed the screen, opens no second camera.
-                                takeAnother = { corners, look, allPages -> if (vm.finishCrop(corners, look, allPages)) takePhoto() },
-                                close = vm::closeCrop,
-                            ),
-                        )
-                    }
+                    // Back is the screen's own: on its second step, it goes back to the first.
+                    CropScreen(
+                        session = freezeWhen(!active, crop),
+                        items = freezeWhen(!active, items),
+                        scan = freezeWhen(!active, scan),
+                        active = active,
+                        arrived = active && transition.currentState == EnterExitState.Visible,
+                        snackbar = screenSnackbar,
+                        actions = CropActions(
+                            done = { vm.finishCrop(it.corners, it.look, it.allPages, it.adjustments, it.rotation) },
+                            // A second tap, once the first has closed the screen, opens no second camera.
+                            takeAnother = { if (vm.finishCrop(it.corners, it.look, it.allPages, it.adjustments, it.rotation)) takePhoto() },
+                            close = vm::closeCrop,
+                        ),
+                    )
                 }
                 current == "images/result" -> {
                     val files = freezeWhen(!active, result) ?: emptyList()
@@ -625,7 +726,7 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                                     pdfPicker.launch(arrayOf(PdfSaver.PDF_MIME))
                                 }
                             },
-                            // Word, PowerPoint and EPUB to PDF take several files of their kind.
+                            // Word, PowerPoint, Excel and EPUB to PDF take several files of their kind.
                             pickMultiple = {
                                 val kind = tool.officeKind
                                 launch(R.string.msg_no_picker) {
@@ -691,6 +792,26 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     ZipProgressDialog(zipProgress, onCancel = vm::cancelZip)
     ZipProgressDialog(pdfZipProgress, onCancel = pdfVm::cancelZip)
     ocrProblem?.let { OcrProblemDialog(it, onDismiss = vm::dismissOcrProblem) }
+
+    // The dialog belongs to the list: it goes when another screen opens (images shared meanwhile, say),
+    // and when the file has left the list.
+    LaunchedEffect(route, recentFiles) {
+        if ((route != "home" && route != "recent") || recentFiles.none { it.uri == lostFile }) lostFile = null
+    }
+    recentFiles.firstOrNull { it.uri == lostFile }?.let { file ->
+        AlertDialog(
+            onDismissRequest = { lostFile = null },
+            title = { Text(stringResource(R.string.recent_lost_title)) },
+            text = { Text(stringResource(R.string.recent_lost_body, file.name)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    lostFile = null
+                    recent.remove(file)
+                }) { Text(stringResource(R.string.recent_remove)) }
+            },
+            dismissButton = { TextButton(onClick = { lostFile = null }) { Text(stringResource(R.string.keep)) } },
+        )
+    }
 
     if (confirmDiscard && route == "images") {
         AlertDialog(
@@ -824,13 +945,14 @@ private class ScreenOpener {
 
 /**
  * Where files shared to Usugami of [kind] open: Choose a tool ("share") for PDFs, their converter for
- * Word, PowerPoint and EPUB files. Null for none, and for images, which go to the editor.
+ * Word, PowerPoint, Excel and EPUB files. Null for none, and for images, which go to the editor.
  */
 private fun sharedRoute(kind: SharedKind?): String? = when (kind) {
     SharedKind.PDF -> "share"
     SharedKind.WORD -> PdfTool.WORD.name.lowercase()
     SharedKind.POWERPOINT -> PdfTool.POWERPOINT.name.lowercase()
     SharedKind.EPUB -> PdfTool.EPUB.name.lowercase()
+    SharedKind.EXCEL -> PdfTool.EXCEL.name.lowercase()
     else -> null
 }
 
@@ -838,7 +960,7 @@ private fun sharedRoute(kind: SharedKind?): String? = when (kind) {
 private fun isPdfToolRoute(route: String): Boolean = PdfTool.entries.any { it.name.equals(route, ignoreCase = true) }
 
 /**
- * How deep a screen is: home 0, a tool's editor, Choose a tool or Settings 1, a result, a tool opened
- * from Choose a tool or About 2, a text About opens 3.
+ * How deep a screen is: home 0, a tool's editor, Choose a tool, Recent files or Settings 1, a result,
+ * a tool opened from Choose a tool or About 2, a text About opens 3.
  */
 private fun screenDepth(screen: String): Int = if (screen == "home") 0 else 1 + screen.count { it == '/' }

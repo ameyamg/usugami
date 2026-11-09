@@ -11,6 +11,11 @@
     <string name="home_subtitle">Your files stay on this phone. No ads, account, or uploads.</string>
     <string name="tool_images">Images to PDF</string>
     <string name="tool_images_detail">Camera scans, JPGs and PNGs to PDF, with text recognition</string>
+    <!-- The large card at the top of Home: take photos of a paper document, or pick images of one, then crop and clean up each page. -->
+    <string name="scan_title">Scan document</string>
+    <string name="scan_detail">Take photos or upload images, then crop and clean them up</string>
+    <!-- Picks images from the phone's gallery: nothing leaves the phone. -->
+    <string name="scan_upload">Upload images</string>
     <string name="tool_split">Split PDF</string>
     <string name="tool_split_detail">Extract pages or split into smaller files</string>
     <string name="tool_merge">Merge PDF</string>
@@ -286,6 +291,31 @@
         <item quantity="one">%1$d of %2$d slide</item>
         <item quantity="other">%1$d of %2$d slides</item>
     </plurals>
+    <!-- Excel to PDF. Excel is the name of Microsoft's app, kept as it is; .xlsx and .xls are file
+         extensions. A workbook is an Excel file; a sheet is one of its tabs. -->
+    <string name="tool_excel">Excel to PDF</string>
+    <string name="tool_excel_detail">Spreadsheets (.xlsx), sheet by sheet</string>
+    <string name="pick_excel">Choose Excel files</string>
+    <string name="add_excel">Add Excel files</string>
+    <string name="document_excel">Excel workbook</string>
+    <string name="office_note_excel">Each sheet starts a new page, as Excel prints it; hidden sheets are left out. Your phone\'s fonts stand in for the workbook\'s, and charts are left out.</string>
+    <string name="office_legacy_excel">This is an old Excel file (.xls). Save it as .xlsx in Excel or another app, then try again.</string>
+    <string name="office_legacy_excel_many">These are old Excel files (.xls). Save them as .xlsx in Excel or another app, then try again.</string>
+    <string name="office_encrypted_excel">This file is protected with a password. Remove the password in Excel, save the file, then try again.</string>
+    <string name="office_encrypted_excel_many">These files are protected with a password. Remove the password in Excel, save the files, then try again.</string>
+    <string name="office_not_excel">This isn\'t an Excel workbook (.xlsx), or it\'s damaged.</string>
+    <string name="office_not_excel_many">These aren\'t Excel workbooks (.xlsx), or they\'re damaged.</string>
+    <string name="office_no_sheets">This workbook has nothing to convert. Hidden sheets are left out.</string>
+    <string name="office_no_sheets_many">These workbooks have nothing to convert. Hidden sheets are left out.</string>
+    <string name="office_too_large">This workbook is too big to convert on a phone. Set a print area for the part you need in Excel or another app, then try again.</string>
+    <string name="office_too_large_many">These workbooks are too big to convert on a phone. Set a print area for the part you need in Excel or another app, then try again.</string>
+    <!-- Excel to PDF's choices. "As in the file" keeps the paper size or orientation each sheet was set to print on. -->
+    <string name="sheet_as_file">As in the file</string>
+    <string name="sheet_fit_width">Fit columns to page width</string>
+    <string name="sheet_fit_width_on">Wide sheets shrink so their columns fit across the page, but never below half size.</string>
+    <string name="sheet_fit_width_off">Columns that don\'t fit go on more pages, as Excel prints them.</string>
+    <string name="sheet_gridlines">Gridlines</string>
+    <string name="sheet_gridlines_detail">Light gray lines between cells, as on screen. Borders, and gridlines a sheet is set to print, always show.</string>
     <!-- Delete pages, Reorganize PDF and Flatten PDF. "Flatten" makes form fields and comments part of the page. -->
     <string name="tool_delete_pages">Delete pages</string>
     <string name="tool_delete_pages_detail">Remove the pages you don\'t need</string>
@@ -459,7 +489,7 @@
     <string name="add_images">Add images</string>
     <string name="add_more">Add more</string>
     <string name="convert">Convert to PDF</string>
-    <!-- Word, PowerPoint or EPUB to PDF with several files (never fewer than 2). -->
+    <!-- Word, PowerPoint, Excel or EPUB to PDF with several files (never fewer than 2). -->
     <plurals name="convert_many">
         <item quantity="one">Convert %d file to PDF</item>
         <item quantity="other">Convert %d files to PDF</item>
@@ -487,8 +517,8 @@
     <!-- Cropping a page out of a photo -->
     <string name="crop_title">Crop page</string>
     <!-- Above the photo when the page was found on it automatically. -->
-    <string name="crop_found">Usugami found the page. Drag the corners to adjust them.</string>
-    <string name="crop_not_found">Drag the corners onto the corners of the page.</string>
+    <string name="crop_found">Usugami found the page. Drag the corners or sides to adjust it.</string>
+    <string name="crop_not_found">Drag the corners or sides onto the edges of the page.</string>
     <string name="crop_not_a_page">The corners don\'t make a page: put each one on a corner of the page.</string>
     <string name="crop_reset">Reset</string>
     <string name="crop_whole">Whole image</string>
@@ -503,14 +533,44 @@
     <string name="crop_corner_top_right">Top-right corner</string>
     <string name="crop_corner_bottom_right">Bottom-right corner</string>
     <string name="crop_corner_bottom_left">Bottom-left corner</string>
+    <!-- Handles in the middle of each side of the page's outline: dragging one moves that whole side. -->
+    <string name="crop_side_top">Top side</string>
+    <string name="crop_side_right">Right side</string>
+    <string name="crop_side_bottom">Bottom side</string>
+    <string name="crop_side_left">Left side</string>
+    <!-- Turn the image (and the page's outline on it) a quarter turn. -->
+    <string name="crop_rotate_left">Rotate left</string>
+    <string name="crop_rotate_right">Rotate right</string>
+    <!-- Goes on from cropping the page to choosing its look; during a scan of several images, also on to the next image. -->
+    <string name="crop_next">Next</string>
+    <!-- The crop screen's close button while several uploaded images are cropped one after another: the images not cropped yet stay as they are. -->
+    <string name="crop_stop">Stop cropping</string>
     <string name="crop_failed">Couldn\'t crop the page. It was kept as it was.</string>
-    <!-- How the page looks in the PDF, chosen on the crop screen: a heading, then the four looks. -->
+    <!-- The second step of cropping a page: its look, brightness and contrast. -->
+    <string name="filter_title">Filters</string>
+    <string name="filter_preview_description">The page, as it will be in the PDF</string>
+    <string name="filter_brightness">Brightness</string>
+    <string name="filter_contrast">Contrast</string>
+    <!-- Puts the slider back in the middle, at 0. -->
+    <string name="filter_reset_brightness">Reset brightness</string>
+    <string name="filter_reset_contrast">Reset contrast</string>
+    <!-- Under the title while several uploaded images are cropped one after another, e.g. "Page 2 of 5". -->
+    <string name="scan_place">Page %1$d of %2$d</string>
+    <!-- What a screen reader says as each image of such a scan comes in: the step's name (Crop page, or Filters), then which image it is, e.g. "Crop page, Page 2 of 5". -->
+    <string name="scan_pane_title">%1$s, %2$s</string>
+    <!-- How the page looks in the PDF, chosen on the filters step: a heading over the looks. -->
     <string name="look_title">Look</string>
     <string name="look_original">Original</string>
     <!-- The paper made white and the print darker, in colour. -->
     <string name="look_enhanced">Enhanced</string>
     <string name="look_grayscale">Grayscale</string>
     <string name="look_black_white">Black &amp; white</string>
+    <!-- Brighter, with shadows softened and the colours kept close to the photo's. -->
+    <string name="look_lighten">Lighten</string>
+    <!-- The strongest clean-up: whiter paper, richer colours, darker and crisper print. -->
+    <string name="look_super_enhanced">Super enhanced</string>
+    <!-- Black and white that prints lighter, to save ink or toner: thin print, large dark areas left hollow. -->
+    <string name="look_ink_saver">Ink saver</string>
     <string name="look_all_pages">Apply to all pages</string>
 
     <!-- Options -->
@@ -665,6 +725,7 @@
     <string name="msg_out_of_space">not enough free storage</string>
     <string name="msg_unknown_error">an unexpected error occurred</string>
     <string name="msg_no_pdf_app">No app on this phone can open PDFs.</string>
+    <string name="msg_no_zip_app">No app on this phone can open ZIP files.</string>
     <string name="msg_no_share_app">No app on this phone can share PDFs.</string>
     <string name="msg_no_file_picker">This phone has no file picker to save with.</string>
     <string name="msg_no_picker">This phone has no app to pick files with.</string>
@@ -679,6 +740,19 @@
         <item quantity="other">The PDFs were cleared from temporary storage. Please create them again.</item>
     </plurals>
 
+    <!-- Recent files: the files saved with Usugami, newest first, on Home under Scan document and on a screen of their own, to open or share again. -->
+    <string name="recent_title">Recent files</string>
+    <string name="recent_see_all">See all</string>
+    <!-- Takes a file off the list. The file itself isn't deleted. -->
+    <string name="recent_remove">Remove from list</string>
+    <string name="recent_clear">Clear list</string>
+    <string name="recent_clear_title">Clear the list?</string>
+    <string name="recent_clear_body">The files stay where you saved them. Only this list is cleared.</string>
+    <string name="recent_empty">Files you save show here, so you can open and share them again.</string>
+    <!-- A listed file Usugami can no longer reach: its access to the file has ended, or the place it is in (an SD card, say) is out of reach. %1$s is the file's name. -->
+    <string name="recent_lost_title">Can\'t open this file</string>
+    <string name="recent_lost_body">Usugami can no longer open %1$s. If the file still exists, you can find it with your phone\'s Files app.</string>
+
     <!-- Searching for a tool on Home -->
     <string name="home_search_hint">Search tools</string>
     <string name="home_search_clear">Clear search</string>
@@ -691,8 +765,11 @@
     <!-- Hidden words that also find a tool when searched for on Home, separated by commas. They are
          never shown: use the words people would type in this language for what the tool does. -->
     <string name="search_keywords_images">photo, picture, JPEG, scan, scanner, camera, gallery, document, black and white, OCR</string>
+    <string name="search_keywords_scan">scan, scanner, CamScanner, camera, photo, document, paper, receipt, crop, enhance, filter, brightness, contrast, black and white</string>
     <string name="search_keywords_word">doc, docx, document, Office, convert</string>
     <string name="search_keywords_powerpoint">ppt, pptx, slides, presentation, Office, convert</string>
+    <!-- For the Excel to PDF card, which joins Home in this release. -->
+    <string name="search_keywords_excel">xls, xlsx, spreadsheet, sheet, table, workbook, cells, Office, Google Sheets, convert</string>
     <string name="search_keywords_merge">join, combine, append, put together</string>
     <string name="search_keywords_split">separate, cut, divide, extract, break up</string>
     <string name="search_keywords_reorganize">reorder, rearrange, order, sort, move, insert, blank page</string>
