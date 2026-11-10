@@ -158,6 +158,22 @@ class SpreadsheetNumbersTest {
         )
     }
 
+    @Test fun aNegativeNumberThatRoundsToNothingHasNoMinus() {
+        check(
+            row(-0.001, "0.00", "0.00"),
+            row(-0.004, "#,##0.00", "0.00"),
+            row(-0.001, "0%", "0%"),
+            row(-0.001, "0.00\" kg\"", "0.00 kg"),
+            row(-0.001, "?/8", "0/8"),
+            // Its own section for negative numbers shows it as that section says.
+            row(-0.001, "0.00;-0.00", "-0.00"),
+            row(-0.001, "#,##0.00_);(#,##0.00)", "(0.00)"),
+            // Whatever is left of it after rounding keeps its minus.
+            row(-0.001, "0.00%", "-0.10%"),
+            row(-0.005, "0.00", "-0.01"),
+        )
+    }
+
     @Test fun conditionsPickTheSection() {
         val millions = "[>=1000000]0.0,,\"M\";[>=1000]0.0,\"K\";0"
         check(row(1500000.0, millions, "1.5M"), row(2500.0, millions, "2.5K"), row(999.0, millions, "999"))
@@ -258,6 +274,13 @@ class SpreadsheetNumbersTest {
         assertEquals("1 234,50", SpreadsheetNumbers.format(1234.5, "#,##0.00", french).text)
         assertEquals("1,5", SpreadsheetNumbers.format(1.5, "General", french).text)
         assertEquals("mercredi 15 mars 2023", SpreadsheetNumbers.format(45000.0, "dddd d mmmm yyyy", french).text)
+    }
+
+    @Test fun lakhsAndCroresAreGroupedByTwoDigits() {
+        val indian = SheetLocale.ENGLISH.copy(laterGroups = 2)
+        assertEquals("12,34,567.89", SpreadsheetNumbers.format(1234567.891, "#,##0.00", indian).text)
+        assertEquals("$1,23,45,67,89,012.00", SpreadsheetNumbers.format(123456789012.0, "$#,##0.00", indian).text)
+        assertEquals("999", SpreadsheetNumbers.format(999.0, "#,##0", indian).text)
     }
 
     @Test fun recognizesDateFormats() {
