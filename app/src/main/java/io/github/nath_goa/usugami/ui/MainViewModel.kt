@@ -25,12 +25,16 @@ import io.github.nath_goa.usugami.core.FileNames
 import io.github.nath_goa.usugami.core.ImageTransform
 import io.github.nath_goa.usugami.core.LayoutSettings
 import io.github.nath_goa.usugami.core.NaturalOrder
+import io.github.nath_goa.usugami.core.OpenedFiles
 import io.github.nath_goa.usugami.core.LookAdjustments
 import io.github.nath_goa.usugami.core.MarkStyle
 import io.github.nath_goa.usugami.core.PageCrop
+import io.github.nath_goa.usugami.core.PageGroups
 import io.github.nath_goa.usugami.core.PageLook
+import io.github.nath_goa.usugami.core.ReadFrom
 import io.github.nath_goa.usugami.core.SharedFiles
 import io.github.nath_goa.usugami.core.SharedKind
+import io.github.nath_goa.usugami.core.ShortcutTarget
 import io.github.nath_goa.usugami.core.ZipProgress
 import io.github.nath_goa.usugami.core.isOutOfSpace
 import io.github.nath_goa.usugami.data.AppLanguages
@@ -58,6 +62,9 @@ import io.github.nath_goa.usugami.data.ShareInbox
 import io.github.nath_goa.usugami.data.SharedFile
 import io.github.nath_goa.usugami.data.Thumbnails
 import io.github.nath_goa.usugami.data.ocrEngine
+import io.github.nath_goa.usugami.data.probeKind
+import io.github.nath_goa.usugami.data.office.DocumentSorter
+import io.github.nath_goa.usugami.data.office.PickedDocuments
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
@@ -102,7 +109,10 @@ data class ConvertChoices(val fileName: String, val ocrLanguage: OcrLanguage?)
  * upright, [width] × [height] pixels (see [shown] and [upright]). A photo just taken ([fromCamera])
  * goes if the screen is left without cropping; an image of a scan ([queued], see [ScanQueue]) stays
  * as it is, and so do the scan's images after it. [opened] tells one opening from the next. The
- * page's look starts as [look], with [adjustments].
+ * page's look starts as [look], with [adjustments]. [side] says which side of an ID card the page is
+ * (by its place on the card's page, also when cropped again from the editor), null for a page of its
+ * own; a side being added by the ID card flow ([cardScan]) goes if the screen is left without
+ * cropping, however it was added.
  */
 @Parcelize
 @TypeParceler<CropQuad, CropQuadParceler>
@@ -120,6 +130,8 @@ data class CropSession(
     val look: PageLook = PageLook.ORIGINAL,
     val adjustments: LookAdjustments = LookAdjustments.NONE,
     val queued: Boolean = false,
+    val side: CardSide? = null,
+    val cardScan: Boolean = false,
 ) : Parcelable {
     /** [quad] on the image as the screen shows it, turned [turn] degrees clockwise. */
     fun shown(quad: CropQuad, turn: Int = rotation): CropQuad {
@@ -158,12 +170,13 @@ data class ScanQueue(val waiting: List<Long> = emptyList(), val coming: Int = 0,
 data class PendingCrop(val itemId: Long, val quad: CropQuad) : Parcelable
 
 /**
- * A photo taken, in the camera app's file at [path], to be added as [name]. Kept in the saved state
- * until it is added, so a photo Android closed Usugami before adding (it waits behind images still
- * being added) is added when Usugami starts again.
+ * A photo taken, in the camera app's file at [path], to be added as [name]: as a side of ID card
+ * [card], or as a page of its own (0). Kept in the saved state until it is added, so a photo Android
+ * closed Usugami before adding (it waits behind images still being added) is added when Usugami
+ * starts again.
  */
 @Parcelize
-data class PendingPhoto(val path: String, val name: String) : Parcelable
+data class PendingPhoto(val path: String, val name: String, val card: Long = 0) : Parcelable
 
 class MainViewModel(private val app: Application, private val handle: SavedStateHandle) : AndroidViewModel(app) {
     // Messages are written here, in the language the user picked (see AppLanguages.localized).
@@ -214,6 +227,14 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     /** Set while the crop screen is being opened (the page looked for), so a second tap does nothing. */
     private val _openingCrop = MutableStateFlow(false)
     val openingCrop: StateFlow<Boolean> = _openingCrop.asStateFlow()
+
+    /**
+     * The ID card being scanned, while Home's ID card flow goes on: its prompt shows for the side it
+     * wants, unless that side's photo or image is on its way or on the crop screen. Kept in the saved
+     * state, as [crop] is.
+     */
+    private val _card = MutableStateFlow<CardScan?>(handle[KEY_CARD])
+    val card: StateFlow<CardScan?> = _card.asStateFlow()
 
     /**
      * The images picked with Home's Upload images that are still to go through the crop screen, while
@@ -365,10 +386,11 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     /** The result's first page, which the result screen shows the mark on while it is changed. */
     val markPreview: StateFlow<MarkPreview?> = marker.preview
 
-    // Cropped pages' files are numbered from the same count.
+    // Cropped pages' files and ID cards are numbered from the same count, so a new card never takes
+    // the number of one kept in the saved state, even after the phone's clock was turned back.
     private var nextId = maxOf(
         System.currentTimeMillis(),
-        (items.value.maxOfOrNull { maxOf(it.id, File(it.path).nameWithoutExtension.toLongOrNull() ?: 0L) } ?: 0L) + 1,
+        (items.value.maxOfOrNull { maxOf(it.id, it.card, File(it.path).nameWithoutExtension.toLongOrNull() ?: 0L) } ?: 0L) + 1,
     )
     private var conversion: Job? = null
 
@@ -422,6 +444,23 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     private var shareInterrupted = (handle.remove<Int>(KEY_SHARES_UNDER_WAY) ?: 0) > 0
 
     /**
+     * Where the file being copied in for the reader, or waiting for it, was opened from (a
+     * [ReadFrom]'s name); null when there is none. It is then the only file in [sharedFiles].
+     * Kept in the saved state.
+     */
+    val reading: StateFlow<String?> = handle.getStateFlow(KEY_READING, null)
+
+    /** Bumped when a file opened gives way to a newer one, or to files shared. */
+    private var openGeneration = 0
+
+    /**
+     * Android closed Usugami while a file opened was being copied in (see [open]): the copy cut short
+     * left nothing, so nothing waits for the reader. A file that was in and waiting keeps [reading],
+     * and still opens in the reader.
+     */
+    private var openInterrupted = (handle.remove<Boolean>(KEY_OPENING) == true).also { if (it) handle[KEY_READING] = null }
+
+    /**
      * How many images picked or shared are still to be added. Kept in the saved state, as [sharesUnderWay] is:
      * when Android closes Usugami meanwhile, those not added yet are gone, and the user is told.
      */
@@ -459,6 +498,8 @@ class MainViewModel(private val app: Application, private val handle: SavedState
             if (missing.isNotEmpty()) {
                 setShared(_sharedFiles.value - missing.toSet())
                 pluralMessage(R.plurals.msg_files_cleared, missing.size)
+                // A file opened that the system cleared: nothing waits for the reader.
+                if (_sharedFiles.value.isEmpty()) handle[KEY_READING] = null
             }
         }
         // The result that was showing when Android stopped Usugami in the background, if any.
@@ -511,6 +552,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         viewModelScope.launch { _saved.collect { handle[KEY_SAVED] = it } }
         viewModelScope.launch { _crop.collect { handle[KEY_CROP] = it } }
         viewModelScope.launch { _scan.collect { handle[KEY_SCAN] = it } }
+        viewModelScope.launch { _card.collect { handle[KEY_CARD] = it } }
         // A scan Android closed Usugami in the middle of goes on, once the cleanup is done (see openCrop).
         advanceScan()
     }
@@ -553,9 +595,16 @@ class MainViewModel(private val app: Application, private val handle: SavedState
      * is none). Picked or shared, each is counted in [picksUnderWay] until it is added: when Android
      * closes Usugami meanwhile, the user is told to add the missing ones again (sharing them all
      * again would add twice those already in). [each] is told of each image in turn: the page it
-     * was added as, or null when it couldn't be.
+     * was added as, or null when it couldn't be. An ID card's side is added as a side of [card]
+     * (after its other side, if it has one), named [name].
      */
-    private fun importImages(uris: List<Uri>, refused: Int, each: (ImageItem?) -> Unit = {}): Job? {
+    private fun importImages(
+        uris: List<Uri>,
+        refused: Int,
+        card: Long = 0,
+        name: String? = null,
+        each: (ImageItem?) -> Unit = {},
+    ): Job? {
         if (uris.isEmpty()) {
             if (refused > 0) pluralMessage(R.plurals.msg_failed_import, refused)
             return null
@@ -580,7 +629,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                         // Discarded while waiting its turn.
                         if (generation != importGeneration) return@launch
                         val id = nextId++
-                        val r = withContext(fileOps) { store.import(uri, id) }
+                        val r = withContext(fileOps) { store.import(uri, id, name) }
                         if (generation != importGeneration) {
                             // Discarded while it was being copied.
                             if (r is ImageStore.ImportResult.Added) viewModelScope.launch(fileOps) { store.delete(r.item) }
@@ -589,8 +638,8 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                         var added: ImageItem? = null
                         when (r) {
                             is ImageStore.ImportResult.Added -> {
-                                added = withAllPagesChoice(r.item, batch)
-                                setItems(items.value + added)
+                                added = withAllPagesChoice(r.item, batch).copy(card = card)
+                                setItems(PageGroups.withAdded(items.value, added) { it.card })
                             }
                             ImageStore.ImportResult.Unsupported -> unsupported++
                             ImageStore.ImportResult.Failed -> failed++
@@ -645,6 +694,8 @@ class MainViewModel(private val app: Application, private val handle: SavedState
             if (refused > 0) pluralMessage(R.plurals.msg_share_unreadable, refused)
             return
         }
+        // A file opened that still waits gives way to what is shared now.
+        if (reading.value != null) dropShares()
         // Until the share's last step: counted down on the main thread once its files are copied in, or
         // its images are handed on (from then on they count in picksUnderWay until each is added).
         sharesUnderWay++
@@ -656,7 +707,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                 // The share's own type tells what a file is only when its type and name don't.
                 val kinds = described.map { (type, name) -> SharedFiles.kindOf(type, name, sharedAs) }
                 val kind = SharedFiles.chosen(kinds)
-                val names = uris.indices.map { i -> described[i].second ?: fallbackName(uris[i], kinds[i]) }
+                val names = uris.indices.map { i -> described[i].second ?: inbox.fallbackName(uris[i], kinds[i]) }
                 leftOut(R.plurals.share_unsupported, names.filterIndexed { i, _ -> kinds[i] == SharedKind.OTHER })
                 leftOut(R.plurals.share_other_kind, names.filterIndexed { i, _ -> kinds[i] != SharedKind.OTHER && kinds[i] != kind })
                 val taken = uris.indices.filter { kinds[it] == kind }
@@ -665,15 +716,20 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                     SharedKind.IMAGE -> importImages(taken.map { uris[it] }, refused)
                     else -> {
                         if (refused > 0) pluralMessage(R.plurals.msg_share_unreadable, refused)
-                        copyShared(kind, taken.map { uris[it] to names[it] })
+                        // A file opened since this share came is the one wanted: the share gives way,
+                        // rather than landing beside that file or being taken by the reader in its place.
+                        if (reading.value == null) copyShared(kind, taken.map { uris[it] to names[it] })
                     }
                 }
             }
         }.invokeOnCompletion { sharesUnderWay-- }
     }
 
-    /** Copies [files] (each one's address and name), shared files of [kind], into [sharedFiles]. */
-    private suspend fun copyShared(kind: SharedKind, files: List<Pair<Uri, String>>) {
+    /**
+     * Copies [files] (each one's address and name), shared files of [kind], into [sharedFiles]. A file
+     * [opened] (see [open]) that can't be read is told about in words of its own.
+     */
+    private suspend fun copyShared(kind: SharedKind, files: List<Pair<Uri, String>>, opened: Boolean = false) {
         // Read as the files start to show as being copied in: [dropShares] stops the files the user
         // sees coming, not those of a share still waiting its turn behind them.
         val generation = shareGeneration
@@ -704,7 +760,9 @@ class MainViewModel(private val app: Application, private val handle: SavedState
             } else {
                 // Listed before the copying is said to be over, so they are never taken for gone.
                 setShared(_sharedFiles.value + copies)
-                if (failed > 0) pluralMessage(R.plurals.msg_share_unreadable, failed)
+                if (failed > 0) {
+                    if (opened) message(R.string.reader_unreadable) else pluralMessage(R.plurals.msg_share_unreadable, failed)
+                }
                 // One file shared is told about as before; of several, those left out are named.
                 when {
                     noSpace.isEmpty() -> Unit
@@ -729,6 +787,8 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         val kind = SharedFiles.chosen(all.map { it.kind }) ?: return emptyList()
         val (taken, others) = all.partition { it.kind == kind }
         setShared(emptyList())
+        // The reader has taken the file opened, if that is what waited.
+        handle[KEY_READING] = null
         if (others.isNotEmpty()) {
             leftOut(R.plurals.share_other_kind, others.map { it.name })
             viewModelScope.launch(shareOps) { others.forEach(inbox::delete) }
@@ -739,6 +799,10 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     /** Forgets the shared files waiting or being copied in: the user left the screen they were opening in. */
     fun dropShares() {
         shareGeneration++
+        // A file opened, being copied in or waiting, goes too.
+        openGeneration++
+        handle[KEY_READING] = null
+        handle.remove<Boolean>(KEY_OPENING)
         val dropped = _sharedFiles.value
         setShared(emptyList())
         _sharing.value = null
@@ -750,6 +814,49 @@ class MainViewModel(private val app: Application, private val handle: SavedState
      * gone: true once, for the user to be told.
      */
     fun takeShareInterrupted(): Boolean = shareInterrupted.also { shareInterrupted = false }
+
+    /**
+     * Opens the file at [uri] in the reader: looks at what it is (its content, else its type as
+     * the app that has it or [type] gives it, and its name), then copies it in at once, as shared
+     * files are, to wait in [sharedFiles] for the reader ([reading] says it is for the reader).
+     * A null [uri] is an address Usugami can't read. The file opened last is the one wanted: one
+     * still coming in or waiting, and files shared before, give way to it.
+     */
+    fun open(uri: Uri?, type: String?, from: ReadFrom) {
+        if (uri == null) return message(R.string.reader_unreadable)
+        dropShares()
+        val mine = ++openGeneration
+        handle[KEY_READING] = from.name
+        // Until it is in: when Android closes Usugami meanwhile, the user is told (takeOpenInterrupted).
+        handle[KEY_OPENING] = true
+        viewModelScope.launch {
+            shareLock.withLock {
+                fun current() = mine == openGeneration
+                try {
+                    if (!current()) return@withLock
+                    val (given, name) = withContext(shareOps) { inbox.describe(uri) }
+                    // An app that gives no name (it didn't let Usugami ask) still has the address's
+                    // ending, which "Open with" matched: a PDF there that can't be read is said to be so.
+                    val declared = SharedFiles.kindOf(given, name ?: uri.lastPathSegment, type)
+                    // An image is an image: the others are worth a look inside.
+                    val probed = if (declared == SharedKind.IMAGE) null else withContext(shareOps) { probeKind(app, uri) }
+                    val kind = OpenedFiles.kind(declared, probed)
+                    val shown = name ?: inbox.fallbackName(uri, kind ?: declared)
+                    if (!current()) return@withLock
+                    if (kind == null) message(R.string.reader_cant_open, shown) else copyShared(kind, listOf(uri to shown), opened = true)
+                } finally {
+                    if (current()) {
+                        handle.remove<Boolean>(KEY_OPENING)
+                        // Nothing came in (it couldn't be opened, or read): nothing waits for the reader.
+                        if (_sharedFiles.value.isEmpty()) handle[KEY_READING] = null
+                    }
+                }
+            }
+        }
+    }
+
+    /** Whether Android closed Usugami while a file opened was being copied in: true once, for the user to be told. */
+    fun takeOpenInterrupted(): Boolean = openInterrupted.also { openInterrupted = false }
 
     /**
      * For tests: returns once the shares started so far are sorted and copied in, and the cleanup of
@@ -768,14 +875,49 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         if (names.isNotEmpty()) _messages.trySend(strings.getQuantityString(res, names.size, names.size, strings.listOfNames(names)))
     }
 
-    /** A name for a shared file whose app gives it none, to say which it is. */
-    private fun fallbackName(uri: Uri, kind: SharedKind): String = when (kind) {
-        SharedKind.PDF -> "Document.pdf"
-        SharedKind.WORD -> "Document.docx"
-        SharedKind.POWERPOINT -> "Presentation.pptx"
-        SharedKind.EPUB -> "Book.epub"
-        SharedKind.EXCEL -> "Spreadsheet.xlsx"
-        else -> uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "File"
+    /** Sorts the files picked with Home's Documents to PDF by kind. */
+    private val sorter = DocumentSorter(app)
+
+    private val _pickedDocuments = MutableStateFlow<PickedDocuments?>(null)
+
+    /**
+     * The files picked with Home's Documents to PDF, sorted, until the converter they open in takes
+     * them (see [takePickedDocuments]). Not kept in the saved state: a pick lost with the process
+     * leaves the user on Home with nothing changed.
+     */
+    val pickedDocuments: StateFlow<PickedDocuments?> = _pickedDocuments.asStateFlow()
+
+    /** Set while the files picked with Documents to PDF are being sorted. */
+    private var sortingPick = false
+
+    /**
+     * Home's Documents to PDF: sorts the files picked at [uris] by kind (see [DocumentSorter]), says
+     * which were left out, as for files shared, and offers the rest in [pickedDocuments]. The files
+     * aren't copied: the converter takes them as files picked there.
+     */
+    fun pickDocuments(uris: List<Uri>) {
+        if (uris.isEmpty() || sortingPick) return
+        sortingPick = true
+        viewModelScope.launch {
+            try {
+                val sorted = withContext(Dispatchers.IO) { sorter.sort(uris) }
+                // In the order a share says them.
+                leftOut(R.plurals.share_unsupported, sorted.unsupported)
+                leftOut(R.plurals.share_other_kind, sorted.otherKind)
+                _pickedDocuments.value = sorted.picked
+            } finally {
+                sortingPick = false
+            }
+        }
+    }
+
+    /** The files picked with Documents to PDF and sorted, for the converter they open in; null when there are none. */
+    fun takePickedDocuments(): PickedDocuments? = _pickedDocuments.value.also { _pickedDocuments.value = null }
+
+    /** For tests: opens the [kind] converter empty, as after picking files of that kind that were all refused. */
+    @VisibleForTesting
+    internal fun openConverter(kind: SharedKind) {
+        _pickedDocuments.value = PickedDocuments(kind, emptyList())
     }
 
     // ---- Editing ----
@@ -789,6 +931,18 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         viewModelScope.launch(fileOps) { store.delete(item) }
     }
 
+    /** Removes the page that holds the image [id]: that image, or both sides of an ID card. */
+    fun removePage(id: Long) {
+        val page = pages().firstOrNull { page -> page.any { it.id == id } } ?: return
+        val ids = page.mapTo(HashSet()) { it.id }
+        setItems(items.value.filterNot { it.id in ids })
+        page.forEach(thumbnails::remove)
+        viewModelScope.launch(fileOps) { page.forEach(store::delete) }
+    }
+
+    /** The pages the images make: one image each, but for an ID card's sides, which share one. */
+    private fun pages(list: List<ImageItem> = items.value): List<List<ImageItem>> = PageGroups.pages(list) { it.card }
+
     /** Removes every image, including those still being imported. */
     fun clearAll() {
         importGeneration++
@@ -797,6 +951,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         // Photos waiting their turn are discarded too: a state saved now mustn't bring them back.
         pendingPhotos = emptyList()
         _scan.value = null
+        _card.value = null
         // What comes next starts a new document.
         newScan()
         val all = items.value
@@ -810,34 +965,35 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         }
     }
 
-    /** Moves the image [fromId] to where [toId] is (drag and drop). */
+    /** Moves the page that holds the image [fromId] to where the page holding [toId] is (drag and drop). */
     fun move(fromId: Long, toId: Long) {
-        val list = items.value.toMutableList()
-        val from = list.indexOfFirst { it.id == fromId }
-        val to = list.indexOfFirst { it.id == toId }
+        val list = pages().toMutableList()
+        val from = list.indexOfFirst { page -> page.any { it.id == fromId } }
+        val to = list.indexOfFirst { page -> page.any { it.id == toId } }
         if (from < 0 || to < 0 || from == to) return
         list.add(to, list.removeAt(from))
-        setItems(list)
+        setItems(list.flatten())
     }
 
-    /** Moves an image one place earlier (-1) or later (+1). */
+    /** Moves the page that holds the image [id] one place earlier (-1) or later (+1). */
     fun moveBy(id: Long, offset: Int) {
-        val list = items.value.toMutableList()
-        val from = list.indexOfFirst { it.id == id }
+        val list = pages().toMutableList()
+        val from = list.indexOfFirst { page -> page.any { it.id == id } }
         val to = from + offset
         if (from < 0 || to !in list.indices) return
         list.add(to, list.removeAt(from))
-        setItems(list)
+        setItems(list.flatten())
     }
 
+    /** Sorts the pages, each by its first image's name; an ID card's front stays above its back. */
     fun sort(mode: SortMode) {
-        val list = items.value
+        val list = pages()
         setItems(
             when (mode) {
-                SortMode.NAME_ASC -> list.sortedWith(compareBy(NaturalOrder) { it.name })
-                SortMode.NAME_DESC -> list.sortedWith(compareBy(NaturalOrder) { it.name }).reversed()
+                SortMode.NAME_ASC -> list.sortedWith(compareBy(NaturalOrder) { it[0].name })
+                SortMode.NAME_DESC -> list.sortedWith(compareBy(NaturalOrder) { it[0].name }).reversed()
                 SortMode.REVERSE -> list.reversed()
-            },
+            }.flatten(),
         )
     }
 
@@ -849,6 +1005,10 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     private fun setItems(list: List<ImageItem>) {
         _items.value = list
         if (list.isEmpty()) lastChoices = null
+        // The ID card being scanned wants its back once it has a side, its front again once that has
+        // gone (discarded, or its copy cleared). Before the crop screen of an image that has gone is
+        // closed below, so that the prompt then showing is the right side's.
+        _card.update { scan -> scan?.copy(side = if (list.any { it.card == scan.card }) CardSide.BACK else CardSide.FRONT) }
         // A scan's images that have gone are left out of it at once, so that it counts its images
         // and finishes on its last as it is now.
         _scan.value?.let { scan ->
@@ -883,7 +1043,8 @@ class MainViewModel(private val app: Application, private val handle: SavedState
 
     /**
      * The camera app has closed, having saved a photo ([taken]) or not. The photo is added after any
-     * images still being added, and the crop screen opens for it. A photo not taken leaves nothing.
+     * images still being added, and the crop screen opens for it: during the ID card flow, as the
+     * side of the card it asked for. A photo not taken leaves nothing.
      */
     fun photoTaken(taken: Boolean) {
         val path = capture ?: return
@@ -893,14 +1054,24 @@ class MainViewModel(private val app: Application, private val handle: SavedState
             viewModelScope.launch(fileOps) { file.delete() }
             return
         }
-        val name = "Scan_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.ROOT)) + ".jpg"
-        val photo = PendingPhoto(path, name)
+        val scan = _card.value
+        val photo = if (scan != null) PendingPhoto(path, cardSideName(), scan.card) else PendingPhoto(path, "Scan_${timestamp()}.jpg")
         // In the saved state from now until it is added: Android may close Usugami while it waits.
         pendingPhotos = pendingPhotos + photo
         addPhoto(photo)
     }
 
-    /** Adds [photo] after any images still being added, and opens the crop screen for it. */
+    /** "20261112_101500" for now: the time in the names Usugami gives the photos it takes. */
+    private fun timestamp(): String = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.ROOT))
+
+    /** The name an ID card's side gets, taken or chosen: a PDF of the card alone is suggested under it. */
+    private fun cardSideName(): String = "ID_card_${timestamp()}"
+
+    /**
+     * Adds [photo] after any images still being added (an ID card's side after the card's other
+     * side), and opens the crop screen for it. A side of a card whose flow has ended meanwhile
+     * (Cancel, No back side) is not added.
+     */
     private fun addPhoto(photo: PendingPhoto) {
         _pendingImports.update { it + 1 }
         val generation = importGeneration
@@ -929,17 +1100,63 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                     return@launch
                 }
                 _pendingImports.update { it - 1 }
-                when (r) {
-                    is ImageStore.ImportResult.Added -> {
-                        setItems(items.value + r.item)
-                        openCrop(r.item, fromCamera = true)
+                when {
+                    r is ImageStore.ImportResult.Added && photo.card != 0L && _card.value?.card != photo.card ->
+                        viewModelScope.launch(fileOps) { store.delete(r.item) }
+                    r is ImageStore.ImportResult.Added -> {
+                        val item = r.item.copy(card = photo.card)
+                        setItems(PageGroups.withAdded(items.value, item) { it.card })
+                        openCrop(item, fromCamera = true)
                     }
-                    ImageStore.ImportResult.NoSpace -> pluralMessage(R.plurals.msg_import_no_space, 1)
+                    r == ImageStore.ImportResult.NoSpace -> pluralMessage(R.plurals.msg_import_no_space, 1)
                     else -> pluralMessage(R.plurals.msg_failed_import, 1)
                 }
             }
         }
     }
+
+    // ---- ID card ----
+
+    /**
+     * Starts Home's ID card flow for a new card, asking for its front (see [card]). Not while a PDF
+     * is being made, a page's crop screen shows or opens, a scan of images goes on or another card's
+     * flow does.
+     */
+    fun startCard() {
+        if (cardBlocked()) return
+        _card.value = CardScan(nextId++)
+    }
+
+    /**
+     * Asks for the back of ID card [card], which has its front alone (a one-sided card's Add back
+     * side), starting with the front's look. As [startCard], not while something else is under way.
+     */
+    fun addCardBack(card: Long) {
+        if (card == 0L || cardBlocked()) return
+        val front = items.value.filter { it.card == card }.singleOrNull() ?: return
+        _card.value = CardScan(card, CardSide.BACK, look = front.look)
+    }
+
+    /**
+     * Ends the ID card flow: Cancel on the front's prompt (nothing was added), No back side or Back on
+     * the back's (the card keeps its front alone). A side still on its way is then not added.
+     */
+    fun endCard() {
+        _card.value = null
+    }
+
+    /** Adds the image at [uri], chosen on the ID card flow's prompt, as the side it asks for, and opens its crop screen. */
+    fun cardImage(uri: Uri) {
+        val scan = _card.value ?: return
+        importImages(listOf(uri), refused = 0, card = scan.card, name = cardSideName()) { added ->
+            if (added == null) return@importImages
+            // The flow was ended while it was being added.
+            if (_card.value?.card == scan.card) openCrop(added, fromCamera = false) else remove(added.id)
+        }
+    }
+
+    private fun cardBlocked(): Boolean =
+        _progress.value != null || _crop.value != null || _openingCrop.value || _scan.value != null || _card.value != null
 
     // ---- Cropping ----
 
@@ -953,12 +1170,15 @@ class MainViewModel(private val app: Application, private val handle: SavedState
 
     /**
      * Opens the crop screen for [item], once its page has been looked for: a photo just taken
-     * ([fromCamera]) or an image of a scan ([queued]) starts with the look chosen last, any other
-     * page with its own. An image of a scan that can't be opened is left out of it.
+     * ([fromCamera]) or an image of a scan ([queued]) starts with the look chosen last, a side the ID
+     * card flow is adding with the flow's look, any other page with its own. An image of a scan that
+     * can't be opened is left out of it, and a side whose flow has ended meanwhile is removed.
      */
     private fun openCrop(item: ImageItem, fromCamera: Boolean, queued: Boolean = false) {
         // A second tap while the page is looked for, or with the screen open, does nothing.
         if (_openingCrop.value || _crop.value != null || _progress.value != null) return
+        // Asked now, not once the page has been looked for: Cancel and No back side can be pressed meanwhile.
+        val cardScan = item.card != 0L && _card.value?.card == item.card
         _openingCrop.value = true
         viewModelScope.launch {
             try {
@@ -981,6 +1201,14 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                 val current = items.value.firstOrNull { it.id == item.id }
                 if (current == null || current.source != source || _progress.value != null) return@launch
                 if (queued && _scan.value?.waiting?.firstOrNull() != item.id) return@launch
+                // A side of the ID card flow, which was ended while its page was looked for: nothing was added.
+                val flow = _card.value
+                if (cardScan && flow?.card != item.card) return@launch remove(item.id)
+                // Which side of its card the image is, by its place on the card's page.
+                val side = if (current.card == 0L) null else {
+                    val page = pages().firstOrNull { page -> page.any { it.id == item.id } }
+                    if (page?.first()?.id == item.id) CardSide.FRONT else CardSide.BACK
+                }
                 val reset = found ?: CropQuad.inset(PageCrop.INSET)
                 _crop.value = CropSession(
                     itemId = item.id,
@@ -992,9 +1220,11 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                     found = reset,
                     foundPage = found != null,
                     opened = SystemClock.uptimeMillis(),
-                    look = if (fromCamera || queued) lastLook else current.look,
+                    look = if (cardScan && flow != null) flow.look else if (fromCamera || queued) lastLook else current.look,
                     adjustments = current.adjustments,
                     queued = queued,
+                    side = side,
+                    cardScan = cardScan,
                 )
             } finally {
                 _openingCrop.value = false
@@ -1051,12 +1281,23 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         val quad = session.upright(shown, turn)
         val whole = quad.isWhole()
         if (!whole && !quad.isUsable(source.uprightWidth, source.uprightHeight)) return false
-        _crop.value = null
         // The look first, so the page cropped in the background keeps it.
         val chosen = look ?: picked.look
         val adjusted = adjustments ?: picked.adjustments
-        // The next photo starts with the look chosen, not with one a page only kept.
-        if (look != null && (session.fromCamera || session.queued || allPages || look != session.look)) lastLook = look
+        // A side the ID card flow added: the card's back starts with this look, or, once the card has
+        // both sides, the flow is over. Before the screen closes, so that the back's prompt never shows
+        // for a moment after the back. The back is the card's last side also when its front has gone
+        // meanwhile (its copy cleared): the card keeps its back alone, and the flow doesn't ask for
+        // a second back.
+        if (session.cardScan && _card.value?.card == picked.card) {
+            if (session.side == CardSide.BACK || items.value.count { it.card == picked.card } >= 2) _card.value = null
+            else _card.update { it?.copy(side = CardSide.BACK, look = chosen) }
+        }
+        _crop.value = null
+        // The next photo starts with the look chosen, not with one a page only kept. An ID card's look
+        // stays the card's (a card isn't paper), unless it is given to every page.
+        val remembered = if (session.side != null) allPages else session.fromCamera || session.queued || allPages || look != session.look
+        if (look != null && remembered) lastLook = look
         if (allPages) {
             setItems(items.value.map { it.copy(look = chosen, adjustments = adjusted) })
             // And the images still being added, such as the rest of a scan, as each comes.
@@ -1082,23 +1323,30 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     }
 
     /**
-     * Leaves the crop screen without cropping. A photo just taken is discarded. A scan stops, also
-     * while its next image is awaited: the images not through the crop screen stay as they are.
+     * Leaves the crop screen without cropping. A photo just taken is discarded, and so is a side the
+     * ID card flow added, whose prompt then shows again. A scan stops, also while its next image is
+     * awaited: the images not through the crop screen stay as they are.
      */
     fun closeCrop() {
         val session = _crop.value
         if (session == null || session.queued) _scan.value = null
         session ?: return
+        if (session.cardScan) {
+            // Removed first: that closes the screen (see setItems) with the flow's side already right.
+            remove(session.itemId)
+            if (_crop.value === session) _crop.value = null
+            return
+        }
         _crop.value = null
         if (session.fromCamera) remove(session.itemId)
     }
 
     /**
-     * Whether a scan's page is still to reach the editor: the camera app is open, or the crop screen
-     * shows, is being opened or awaits a scan's next image. A page cropped in the background is in the
-     * editor already.
+     * Whether a scan's page is still to reach the editor: the camera app is open, the crop screen
+     * shows, is being opened or awaits a scan's next image, or the ID card flow goes on. A page
+     * cropped in the background is in the editor already.
      */
-    fun scanUnderWay(): Boolean = _cameraOpen.value || _openingCrop.value || _crop.value != null || _scan.value != null
+    fun scanUnderWay(): Boolean = _cameraOpen.value || _openingCrop.value || _crop.value != null || _scan.value != null || _card.value != null
 
     /**
      * Makes [item]'s page from [source], straightened inside [quad], and puts it in place. In the saved
@@ -1177,6 +1425,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         val crops = restoredCrops(saved, ids)
         val looks = saved.getByteArray("looks")?.takeIf { it.size == ids.size }
         val adjustments = saved.getIntArray("adjustments")?.takeIf { it.size == ids.size }
+        val cards = restoredCards(saved, ids)
         return ids.indices.map { i ->
             val format = ImageFormat.entries[details[i] shr 16]
             val crop = crops[i]
@@ -1192,8 +1441,17 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                 original = crop?.second,
                 look = looks?.getOrNull(i)?.toInt()?.let { PageLook.entries.getOrNull(it) } ?: PageLook.ORIGINAL,
                 adjustments = adjustments?.getOrNull(i)?.let(::unpackAdjustments) ?: LookAdjustments.NONE,
+                card = cards[i] ?: 0L,
             )
         }
+    }
+
+    /** The ID card numbers [packItems] kept, by the places of the cards' sides in the list. */
+    private fun restoredCards(saved: Bundle, ids: LongArray): Map<Int, Long> {
+        val places = saved.getIntArray("cardSides") ?: return emptyMap()
+        val cards = saved.getLongArray("cards") ?: return emptyMap()
+        if (cards.size != places.size || places.any { it !in ids.indices }) return emptyMap()
+        return places.indices.associate { places[it] to cards[it] }
     }
 
     /** The cropped pages [packItems] kept, by their place in the list: each page's file and its original. */
@@ -1260,10 +1518,13 @@ class MainViewModel(private val app: Application, private val handle: SavedState
     /** What the Convert sheet starts with: the last attempt's choices if it made no PDF, otherwise the defaults. */
     fun initialChoices(): ConvertChoices = lastChoices ?: ConvertChoices(defaultFileName(), ocrLanguage = null)
 
-    /** Suggested name for a merged PDF: the image's own name for one image, otherwise a timestamp. */
+    /**
+     * Suggested name for a merged PDF: the image's own name for one page (an ID card's: its front's),
+     * otherwise a timestamp.
+     */
     private fun defaultFileName(): String {
         val list = items.value
-        if (list.size == 1) return FileNames.sanitize(FileNames.baseName(list[0].name), PdfExporter.DEFAULT_NAME)
+        if (pages(list).size == 1) return FileNames.sanitize(FileNames.baseName(list[0].name), PdfExporter.DEFAULT_NAME)
         return "Usugami_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.ROOT))
     }
 
@@ -1274,9 +1535,12 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         val snapshot = items.value
         if (snapshot.isEmpty() || _progress.value != null || _pendingImports.value > 0) return
         // Not while a page's crop screen shows or is opening, as it does for a photo just taken: the
-        // page would go into the PDF uncropped, and closing that screen later would remove it.
-        if (_crop.value != null || _openingCrop.value) return
-        if (snapshot.size > 1) {
+        // page would go into the PDF uncropped, and closing that screen later would remove it. Nor
+        // while the ID card flow goes on: its card isn't finished.
+        if (_crop.value != null || _openingCrop.value || _card.value != null) return
+        // The setting and the sheet count pages: an ID card's sides make one.
+        val single = pages(snapshot).size == 1
+        if (!single) {
             _merge.value = merge
             settingsStore.merge = merge
         }
@@ -1304,7 +1568,7 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                         }
                         _progress.value = Progress(0, snapshot.size)
                     }
-                    val files = exporter.export(pages, layout, compression, merge || snapshot.size == 1, fileName, strings.getString(R.string.app_name)) { done ->
+                    val files = exporter.export(pages, layout, compression, merge || single, fileName, strings.getString(R.string.app_name)) { done ->
                         _progress.value = Progress(done, snapshot.size)
                     }
                     made = files
@@ -1639,6 +1903,26 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         }.start()
     }
 
+    // ---- Launcher shortcuts ----
+
+    /**
+     * The launcher shortcut just used, by its [ShortcutTarget.id], until the screen acts on it (see
+     * UsugamiApp). Kept in the saved state, so it outlives the activity being recreated, as it is
+     * when the first launch's language screen has a language chosen.
+     */
+    val shortcut: StateFlow<String?> = handle.getStateFlow<String?>(KEY_SHORTCUT, null)
+
+    /** A launcher shortcut was used: [id] names its target (see MainActivity.handleShortcut). */
+    fun openShortcut(id: String) {
+        handle[KEY_SHORTCUT] = id
+    }
+
+    /** The shortcut used and not acted on yet, which is then forgotten; null when there is none. */
+    fun takeShortcut(): ShortcutTarget? =
+        // Set to null, never removed: removing a key also cuts the flow read from it (shortcut) off the
+        // handle for good, and the next shortcut used would never reach the screen.
+        ShortcutTarget.of(handle.get<String>(KEY_SHORTCUT)).also { handle[KEY_SHORTCUT] = null }
+
     companion object {
         private const val KEY_ITEMS = "items"
         private const val KEY_SAVED = "saved"
@@ -1652,7 +1936,11 @@ class MainViewModel(private val app: Application, private val handle: SavedState
         private const val KEY_PENDING_CROPS = "pending_crops"
         private const val KEY_PENDING_PHOTOS = "pending_photos"
         private const val KEY_SCAN = "scan"
+        private const val KEY_CARD = "card"
         private const val KEY_MAKING = "making"
+        private const val KEY_READING = "reading"
+        private const val KEY_OPENING = "opening"
+        private const val KEY_SHORTCUT = "shortcut"
 
         /**
          * [list] for the saved state, in a few bytes per image: a list of [ImageItem]s took hundreds,
@@ -1660,11 +1948,14 @@ class MainViewModel(private val app: Application, private val handle: SavedState
          * it went to the background. The copies' paths follow from their ids (see [ImageStore.fileFor]),
          * and names never contain "/" (they are what follows the last one). A cropped page's file has
          * a number of its own, and the image it was cropped from has the page's id. Each page's look
-         * is a byte, and its brightness and contrast a number.
+         * is a byte, and its brightness and contrast a number. The ID cards' sides are kept by their
+         * places with their card numbers, as the cropped pages are, so a list without cards takes no
+         * more room for them.
          */
         @VisibleForTesting
         internal fun packItems(list: List<ImageItem>): Bundle {
             val cropped = list.indices.filter { list[it].original != null }
+            val sides = list.indices.filter { list[it].card != 0L }
             fun original(c: Int) = list[cropped[c]].original!!
             return bundleOf(
                 "ids" to LongArray(list.size) { list[it].id },
@@ -1678,6 +1969,8 @@ class MainViewModel(private val app: Application, private val handle: SavedState
                 "cropCorners" to FloatArray(8 * cropped.size) { i -> original(i / 8).corners[i % 8 / 2].let { if (i % 2 == 0) it.x else it.y } },
                 "looks" to ByteArray(list.size) { list[it].look.ordinal.toByte() },
                 "adjustments" to IntArray(list.size) { packAdjustments(list[it].adjustments) },
+                "cardSides" to sides.toIntArray(),
+                "cards" to LongArray(sides.size) { list[sides[it]].card },
             )
         }
 

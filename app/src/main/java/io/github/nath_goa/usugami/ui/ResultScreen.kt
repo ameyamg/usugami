@@ -1,6 +1,7 @@
 package io.github.nath_goa.usugami.ui
 
 import android.text.format.Formatter
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -29,15 +30,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.automirrored.rounded.TextSnippet
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FolderZip
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PictureAsPdf
+import androidx.compose.material.icons.rounded.Print
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.SaveAs
 import androidx.compose.material.icons.rounded.Share
@@ -83,11 +86,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import io.github.nath_goa.usugami.R
 import io.github.nath_goa.usugami.core.Compressor
 import io.github.nath_goa.usugami.core.MarkStyle
+import io.github.nath_goa.usugami.core.OutputType
+import io.github.nath_goa.usugami.core.PdfPageSelection
 import io.github.nath_goa.usugami.core.ZipProgress
 import io.github.nath_goa.usugami.data.MarkSetting
 import io.github.nath_goa.usugami.data.PdfFile
@@ -100,13 +104,13 @@ class ResultActions(
     val saveToDownloads: (() -> Unit)?,
     val saveAs: () -> Unit,
     val startOver: () -> Unit,
-    /** For several PDFs: one ZIP file of them, shared, or saved with the "Save as" screen. */
+    /** For several files: one ZIP file of them, shared, or saved with the "Save as" screen. */
     val shareZip: () -> Unit,
     val saveZip: () -> Unit,
     /**
-     * For several PDFs, each PDF's own Share and Save buttons, beside Open: saved into Downloads
+     * For several files, each file's own Share and Save buttons, beside Open: saved into Downloads
      * ([saveOneToDownloads], null where Android has no Downloads to save to) or with the "Save as"
-     * screen. Without [saveOneAs], each PDF has only Open.
+     * screen. Without [saveOneAs], each file has only Open.
      */
     val shareOne: ((PdfFile) -> Unit)? = null,
     val saveOneToDownloads: ((PdfFile) -> Unit)? = null,
@@ -114,8 +118,16 @@ class ResultActions(
     /** Puts the Usugami mark on the PDFs, or takes it off, and gives it a size and opacity (see [MarkCard]). */
     val setMark: (Boolean) -> Unit = {},
     val setMarkStyle: (MarkStyle) -> Unit = {},
+    /** Prints a PDF with Android's print screen; null where the phone can't print. */
+    val print: ((PdfFile) -> Unit)? = null,
+    /** Puts the text of a text file made (PDF to images or text) on the clipboard: the text card's Copy. */
+    val copyText: (() -> Unit)? = null,
 )
 
+/**
+ * What a tool made: PDFs, or images or text files (PDF to images or text), each with Open, and Share
+ * and the ways to save them. The Usugami watermark is only offered when there is a PDF to put it on.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ResultScreen(
@@ -126,7 +138,7 @@ fun ResultScreen(
     actions: ResultActions,
     zipProgress: ZipProgress? = null,
     note: String? = null,
-    /** The names of the PDFs saved so far, each marked as saved (with [ResultActions.saveOneAs]). */
+    /** The names of the files saved so far, each marked as saved (with [ResultActions.saveOneAs]). */
     savedFiles: Set<String> = emptySet(),
     /** Whether the PDFs carry the Usugami mark, and its size and opacity. */
     mark: MarkSetting = MarkSetting(),
@@ -134,9 +146,13 @@ fun ResultScreen(
     marking: Boolean = false,
     /** The first page, to show the mark on while it is changed. */
     markPreview: MarkPreview? = null,
+    /** The beginning of the text file made, shown under it with Copy (see [ResultTextCard]). */
+    text: TextPreview? = null,
 ) {
     var confirmStartOver by rememberSaveable { mutableStateOf(false) }
     val single = files.size == 1
+    // What the result is, as its first file is: a tool makes one kind of file.
+    val kind = files.firstOrNull()?.type ?: OutputType.PDF
     // Nothing else starts while a save, a ZIP file or a change of the mark is under way.
     val idle = !busy && zipProgress == null && !marking
     // The success check mark grows in once when the result arrives. Saved, so it does not
@@ -157,7 +173,7 @@ fun ResultScreen(
                 scrollBehavior = barScroll,
                 title = { BarTitle(stringResource(R.string.result_title)) },
                 navigationIcon = {
-                    // Not while saving: leaving and converting again would replace the PDFs being saved.
+                    // Not while saving: leaving and converting again would replace the files being saved.
                     IconButton(onClick = actions.back, enabled = !busy) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back_to_editing))
                     }
@@ -166,13 +182,13 @@ fun ResultScreen(
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
-        // The PDFs (a result can have thousands, one per page of a long PDF split) are in a lazy list,
+        // The files (a result can have thousands, one per page of a long PDF split) are in a lazy list,
         // so only those on screen are laid out, and a save that turns their buttons off and on again
         // redraws only those.
         val bars = WindowInsets.navigationBars.asPaddingValues()
         val direction = LocalLayoutDirection.current
-        // The name of the PDF whose Save menu is open: one for the whole screen, so the saved state
-        // doesn't grow with the PDFs.
+        // The name of the file whose Save menu is open: one for the whole screen, so the saved state
+        // doesn't grow with the files.
         val saveMenu = rememberSaveable { mutableStateOf<String?>(null) }
         val wide = Modifier.widthIn(max = 480.dp).fillMaxWidth()
         LazyColumn(
@@ -202,25 +218,29 @@ fun ResultScreen(
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        stringResource(if (single) R.string.result_heading_one else R.string.result_heading_many),
+                        stringResource(resultHeading(kind, single)),
                         style = MaterialTheme.typography.headlineSmall,
                         textAlign = TextAlign.Center,
                     )
                     Spacer(Modifier.height(20.dp))
                 }
             }
-            // Near the top, above the PDFs and what can be done with them: it changes them.
-            item(key = "mark") {
-                MarkCard(
-                    setting = mark,
-                    working = marking,
-                    // Not while the PDFs, or a ZIP file of them, are being saved.
-                    enabled = !busy && zipProgress == null,
-                    preview = markPreview,
-                    onOn = actions.setMark,
-                    onStyle = actions.setMarkStyle,
-                    modifier = wide.padding(bottom = 12.dp),
-                )
+            // Near the top, above the PDFs and what can be done with them: it changes them. Only with
+            // a PDF to put it on (an empty list is a screen sliding away before it had files: it keeps
+            // the card).
+            if (files.isEmpty() || files.any { it.isPdf }) {
+                item(key = "mark") {
+                    MarkCard(
+                        setting = mark,
+                        working = marking,
+                        // Not while the PDFs, or a ZIP file of them, are being saved.
+                        enabled = !busy && zipProgress == null,
+                        preview = markPreview,
+                        onOn = actions.setMark,
+                        onStyle = actions.setMarkStyle,
+                        modifier = wide.padding(bottom = 12.dp),
+                    )
+                }
             }
             itemsIndexed(files, key = { _, file -> file.file.path }) { index, file ->
                 val saveAs = actions.saveOneAs
@@ -233,14 +253,28 @@ fun ResultScreen(
                             onShare = actions.shareOne?.let { share -> { share(file) } },
                             onSaveToDownloads = actions.saveOneToDownloads?.let { save -> { save(file) } },
                             onSaveAs = { saveAs(file) },
+                            onPrint = actions.print?.takeIf { file.isPdf }?.let { print -> { print(file) } },
                             saveMenu = saveMenu,
                             canOpen = !marking,
                             canShare = zipProgress == null && !marking,
                             canSave = idle,
+                            // Reading the PDF doesn't disturb a save; it is never read while the mark rewrites it.
+                            canPrint = !marking,
                         )
                     } else {
-                        FileRow(file, showOpen = !single, canOpen = !marking, onOpen = { actions.open(file) })
+                        FileRow(
+                            file,
+                            showOpen = !single,
+                            canOpen = !marking,
+                            onOpen = { actions.open(file) },
+                            onPrint = actions.print?.takeIf { file.isPdf }?.let { print -> { print(file) } },
+                        )
                     }
+                }
+            }
+            if (text != null) {
+                item(key = "text") {
+                    ResultTextCard(text, enabled = idle, onCopy = { actions.copyText?.invoke() }, modifier = wide.padding(top = 12.dp))
                 }
             }
             item(key = "actions") {
@@ -277,6 +311,12 @@ fun ResultScreen(
                             enabled = idle,
                             onClick = actions.saveAs,
                         )
+                        // Under "Save as…", across the screen: a third button beside Open and Share wouldn't fit longer languages.
+                        if (single) {
+                            actions.print?.takeIf { files[0].isPdf }?.let { print ->
+                                WideButton(Icons.Rounded.Print, stringResource(R.string.print), Modifier.fillMaxWidth(), enabled = !marking) { print(files[0]) }
+                            }
+                        }
                         if (!single) ZipButton(enabled = idle, onShare = actions.shareZip, onSave = actions.saveZip)
                     }
 
@@ -297,7 +337,7 @@ fun ResultScreen(
                         }
                     }
                     Spacer(Modifier.height(16.dp))
-                    // Not while saving: starting over deletes the PDFs being saved.
+                    // Not while saving: starting over deletes the files being saved.
                     TextButton(onClick = { if (saved) actions.startOver() else confirmStartOver = true }, enabled = !busy) {
                         Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
@@ -397,17 +437,42 @@ private fun ZipDialog(progress: ZipProgress, onCancel: () -> Unit) {
 
 private const val ZIP_DIALOG_DELAY_MS = 400L
 
+/** The heading over a result of [kind]: one file ([single]) or several. */
+@StringRes
+private fun resultHeading(kind: OutputType, single: Boolean): Int = when (kind) {
+    OutputType.PDF -> if (single) R.string.result_heading_one else R.string.result_heading_many
+    OutputType.JPEG, OutputType.PNG -> if (single) R.string.result_heading_image_one else R.string.result_heading_image_many
+    OutputType.TEXT -> if (single) R.string.result_heading_text_one else R.string.result_heading_text_many
+}
+
+/** The icon a file of this type shows beside its name: a PDF, an image or a text file. */
+internal val OutputType.icon: ImageVector
+    get() = when (this) {
+        OutputType.PDF -> Icons.Rounded.PictureAsPdf
+        OutputType.JPEG, OutputType.PNG -> Icons.Rounded.Image
+        OutputType.TEXT -> Icons.AutoMirrored.Rounded.TextSnippet
+    }
+
+/**
+ * A file of the result, with its own Open (and Print, for a PDF on a phone that prints) when there are
+ * several ([showOpen]); a single file has the wide buttons under it instead.
+ */
 @Composable
-private fun FileRow(file: PdfFile, showOpen: Boolean, canOpen: Boolean, onOpen: () -> Unit) {
+private fun FileRow(file: PdfFile, showOpen: Boolean, canOpen: Boolean, onOpen: () -> Unit, onPrint: (() -> Unit)?) {
     OutlinedCard(Modifier.fillMaxWidth()) {
         Row(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Rounded.PictureAsPdf, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+            Icon(file.type.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
             Spacer(Modifier.width(12.dp))
             FileDetails(file, Modifier.weight(1f))
             if (showOpen) {
                 IconButton(onClick = onOpen, enabled = canOpen) {
                     // One per file, so the label names the file.
                     Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = stringResource(R.string.open_file, file.name))
+                }
+                if (onPrint != null) {
+                    IconButton(onClick = onPrint, enabled = canOpen) {
+                        Icon(Icons.Rounded.Print, contentDescription = stringResource(R.string.print_file, file.name))
+                    }
                 }
             } else {
                 Spacer(Modifier.width(12.dp))
@@ -416,7 +481,10 @@ private fun FileRow(file: PdfFile, showOpen: Boolean, canOpen: Boolean, onOpen: 
     }
 }
 
-/** [file]'s name, pages and size, and how much smaller it was made, or that its original was kept. */
+/**
+ * [file]'s name, its pages (for a PDF) and size, and how much smaller it was made, or that its
+ * original was kept.
+ */
 @Composable
 private fun FileDetails(file: PdfFile, modifier: Modifier = Modifier, saved: Boolean = false) {
     val context = LocalContext.current
@@ -424,11 +492,16 @@ private fun FileDetails(file: PdfFile, modifier: Modifier = Modifier, saved: Boo
     // and reading the size again then would show "0 B".
     val sizeBytes = remember(file) { file.sizeBytes }
     val size = Formatter.formatShortFileSize(context, sizeBytes)
-    val pages = pluralStringResource(R.plurals.page_count, file.pageCount, file.pageCount)
+    // An image or a text file shows its size alone: it has no pages to count.
+    val details = if (file.isPdf) {
+        stringResource(R.string.result_details, pluralStringResource(R.plurals.page_count, file.pageCount, file.pageCount), size)
+    } else {
+        size
+    }
     Column(modifier) {
         Text(file.name, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text(
-            stringResource(R.string.result_details, pages, size),
+            details,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -442,6 +515,20 @@ private fun FileDetails(file: PdfFile, modifier: Modifier = Modifier, saved: Boo
         } else if (file.keptOriginal) {
             Text(stringResource(R.string.original_kept), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        // Compress PDF's Black and white left these pages partly in colour: said for as long as the
+        // result shows, the pages as "2,5-7", cut after eight of those with "…".
+        val colorPages = file.gray?.colorPages.orEmpty()
+        if (colorPages.isNotEmpty()) {
+            val pages = remember(colorPages) {
+                val parts = PdfPageSelection.format(colorPages).split(',')
+                if (parts.size > 8) parts.take(8).joinToString(",") + "…" else parts.joinToString(",")
+            }
+            Text(
+                pluralStringResource(R.plurals.gray_color_left, colorPages.size, colorPages.size, pages),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         AnimatedVisibility(visible = saved, enter = fadeIn(Motion.medium()) + expandVertically(Motion.medium()), label = "saved mark") {
             Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
@@ -453,10 +540,10 @@ private fun FileDetails(file: PdfFile, modifier: Modifier = Modifier, saved: Boo
 }
 
 /**
- * One of several PDFs, with buttons of its own under it: Open, Share, and Save, which offers
- * Downloads and "Save as" (or goes straight to "Save as" where Android has no Downloads to save to).
- * [saved] marks it once it has been saved, on its own or with the others. [saveMenu] holds the name
- * of the PDF whose menu is open.
+ * One of several files, with buttons of its own under it: Open, Share, Save, which offers Downloads
+ * and "Save as" (or goes straight to "Save as" where Android has no Downloads to save to), and Print
+ * for a PDF on a phone that prints ([onPrint]). [saved] marks it once it has been saved, on its own or
+ * with the others. [saveMenu] holds the name of the file whose menu is open.
  */
 @Composable
 private fun OwnFileRow(
@@ -466,24 +553,27 @@ private fun OwnFileRow(
     onShare: (() -> Unit)?,
     onSaveToDownloads: (() -> Unit)?,
     onSaveAs: () -> Unit,
+    onPrint: (() -> Unit)?,
     saveMenu: MutableState<String?>,
     canOpen: Boolean,
     canShare: Boolean,
     canSave: Boolean,
+    canPrint: Boolean,
 ) {
     OutlinedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(top = 12.dp, bottom = 4.dp, end = 8.dp)) {
             Row(Modifier.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.PictureAsPdf, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+                Icon(file.type.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
                 Spacer(Modifier.width(12.dp))
                 FileDetails(file, Modifier.weight(1f), saved = saved)
             }
             // Under the details, so a long name, a long translation or a large font size wraps the
-            // buttons onto another line instead of squeezing the name. Each names its PDF for a screen reader.
+            // buttons onto another line instead of squeezing the name. Each names its file for a screen reader.
             val openLabel = stringResource(R.string.open_file, file.name)
             val shareLabel = stringResource(R.string.share_file, file.name)
             val saveLabel = stringResource(R.string.save_file, file.name)
-            // Their icons line up with the PDF's.
+            val printLabel = stringResource(R.string.print_file, file.name)
+            // Their icons line up with the file's.
             FlowRow(Modifier.padding(start = 8.dp)) {
                 TextButton(onClick = onOpen, enabled = canOpen, contentPadding = RowButtonPadding, modifier = Modifier.semantics { contentDescription = openLabel }) {
                     RowButtonContent(Icons.AutoMirrored.Rounded.OpenInNew, stringResource(R.string.open))
@@ -529,18 +619,23 @@ private fun OwnFileRow(
                         )
                     }
                 }
+                if (onPrint != null) {
+                    TextButton(onClick = onPrint, enabled = canPrint, contentPadding = RowButtonPadding, modifier = Modifier.semantics { contentDescription = printLabel }) {
+                        RowButtonContent(Icons.Rounded.Print, stringResource(R.string.print))
+                    }
+                }
             }
         }
     }
 }
 
-/** Narrower than a text button's own, so the three fit on one line on most phones. */
-private val RowButtonPadding = PaddingValues(horizontal = 8.dp)
+/** Narrower than a text button's own, so the four fit on one line on most phones. */
+private val RowButtonPadding = PaddingValues(horizontal = 6.dp)
 
 @Composable
 private fun RowButtonContent(icon: ImageVector, text: String) {
     Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-    Spacer(Modifier.width(6.dp))
+    Spacer(Modifier.width(4.dp))
     Text(text)
 }
 
@@ -559,14 +654,14 @@ private fun WideButton(
         Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
         // With a large font size or a long translation: beside another button, the label (one word)
-        // shrinks to fit; across the screen, it takes a second line. Either way it isn't cut off.
+        // shrinks to fit, smaller than other labels if it must (Portuguese "Compartilhar" with font size
+        // 130% on a narrow phone); across the screen, it takes a second line. Either way it isn't cut off.
         if (halfWidth) {
-            val size = MaterialTheme.typography.labelLarge.fontSize
             Text(
                 text,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                autoSize = TextAutoSize.StepBased(minFontSize = 11.sp, maxFontSize = size, stepSize = 0.5.sp),
+                autoSize = WholeWordsAutoSize(MaterialTheme.typography.labelLarge.fontSize),
             )
         } else {
             Text(text, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)

@@ -22,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -40,21 +41,52 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.nath_goa.usugami.R
+import io.github.nath_goa.usugami.core.OutputType
+import io.github.nath_goa.usugami.core.PageGroups
+import io.github.nath_goa.usugami.core.ReadFrom
 import io.github.nath_goa.usugami.core.RecentFile
 import io.github.nath_goa.usugami.core.SharedFiles
 import io.github.nath_goa.usugami.core.SharedKind
+import io.github.nath_goa.usugami.core.ShortcutPlace
+import io.github.nath_goa.usugami.core.ShortcutRules
+import io.github.nath_goa.usugami.core.ShortcutScene
+import io.github.nath_goa.usugami.core.ShortcutStep
+import io.github.nath_goa.usugami.core.ShortcutTarget
 import io.github.nath_goa.usugami.core.ZipArchive
 import io.github.nath_goa.usugami.data.AppLanguage
 import io.github.nath_goa.usugami.data.AppLanguages
 import io.github.nath_goa.usugami.data.Appearance
 import io.github.nath_goa.usugami.data.ImageStore
 import io.github.nath_goa.usugami.data.LegalDocument
+import io.github.nath_goa.usugami.data.PdfFile
+import io.github.nath_goa.usugami.data.PdfInput
+import io.github.nath_goa.usugami.data.PdfPrinting
 import io.github.nath_goa.usugami.data.PdfSaver
 import io.github.nath_goa.usugami.data.RecentFiles
+import io.github.nath_goa.usugami.data.office.DocumentSorter
+import io.github.nath_goa.usugami.data.office.OfficeKind
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.FileInputStream
+import java.io.InputStream
 
 @Composable
-fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onChooseAppearance: (Appearance) -> Unit) {
+fun UsugamiApp(
+    vm: MainViewModel,
+    onChooseLanguage: (AppLanguage) -> Unit,
+    onChooseAppearance: (Appearance) -> Unit,
+    /** Puts Usugami behind the app that was showing before it; false when it can't. */
+    onLeaveToBack: () -> Boolean,
+    /**
+     * Opens Android's print screen for the PDF the function gives, under the name given; false when
+     * printing couldn't be started. It goes through the activity, which only it can (see MainActivity.print).
+     */
+    onPrint: (name: String, open: () -> InputStream) -> Boolean,
+) {
     val context = LocalContext.current
     // The first time Usugami opens, it asks for a language before anything else. Choosing one
     // usually recreates the activity in that language; this state carries over, so Home follows.
@@ -76,6 +108,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     val openingCrop by vm.openingCrop.collectAsStateWithLifecycle()
     val cameraOpen by vm.cameraOpen.collectAsStateWithLifecycle()
     val scan by vm.scan.collectAsStateWithLifecycle()
+    // The ID card being scanned, while Home's ID card flow goes on.
+    val card by vm.card.collectAsStateWithLifecycle()
     val cropping by vm.cropping.collectAsStateWithLifecycle()
     val progress by vm.progress.collectAsStateWithLifecycle()
     val cancelling by vm.cancelling.collectAsStateWithLifecycle()
@@ -89,6 +123,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     val pdfSaving by pdfVm.saving.collectAsStateWithLifecycle()
     val pdfSavedFiles by pdfVm.savedFiles.collectAsStateWithLifecycle()
     val pdfPasswordRemoved by pdfVm.passwordRemoved.collectAsStateWithLifecycle()
+    val fromPdfNotes by pdfVm.fromPdf.notes.collectAsStateWithLifecycle()
+    val fromPdfOcrProblem by pdfVm.fromPdf.ocrProblem.collectAsStateWithLifecycle()
     val zipProgress by vm.zipProgress.collectAsStateWithLifecycle()
     val pdfZipProgress by pdfVm.zipProgress.collectAsStateWithLifecycle()
     // One setting for the whole app: either view model gives it.
@@ -102,6 +138,12 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     val pdfInputs by pdfVm.inputs.collectAsStateWithLifecycle()
     val pdfLocked by pdfVm.locked.collectAsStateWithLifecycle()
     val pdfImporting by pdfVm.importing.collectAsStateWithLifecycle()
+    val pdfDocuments by pdfVm.documents.collectAsStateWithLifecycle()
+    // A file opened (from another app, or Home) is being copied in for the reader, or waits for it.
+    val reading by vm.reading.collectAsStateWithLifecycle()
+    // The PDF the reader made of a document opened, and the PDF it shows (for Print).
+    val readerSource by pdfVm.reader.source.collectAsStateWithLifecycle()
+    val readerSession by pdfVm.reader.session.collectAsStateWithLifecycle()
     val recent = remember(context) { RecentFiles.of(context) }
     val recentFiles by recent.files.collectAsStateWithLifecycle()
 
@@ -116,9 +158,15 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     LaunchedEffect(pdfVm) {
         pdfVm.messages.collect { snackbar.showSnackbar(it) }
     }
-    // Android closed Usugami while it took in files shared to it, which are gone: said once.
+    // Android closed Usugami while it took in files shared to it, which are gone: said once. Taken in
+    // by the reader, it was a file opened, and is said as one (each is asked, so that each is said once).
     LaunchedEffect(vm, pdfVm) {
-        if (vm.takeShareInterrupted() or pdfVm.takeShareInterrupted()) vm.showMessage(R.string.msg_share_interrupted)
+        val shared = vm.takeShareInterrupted()
+        val taking = pdfVm.takeShareInterrupted()
+        val opened = vm.takeOpenInterrupted()
+        val reader = route == "reader"
+        if (shared || (taking && !reader)) vm.showMessage(R.string.msg_share_interrupted)
+        if (opened || (taking && reader)) vm.showMessage(R.string.reader_open_interrupted)
     }
     // A ZIP file of the result's PDFs is shared once it is ready, while Usugami is on screen: an app
     // in the background can't open the share screen.
@@ -139,16 +187,30 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     // The user chose to stay with that PDF: more shared images don't ask again until they leave the tool.
     var stayOnPdf by rememberSaveable { mutableStateOf(false) }
     // What was done to a tool's PDF is asked about before it is thrown away: "leave" when leaving the
-    // tool, "remove" when removing its PDF.
+    // tool, "remove" when removing its PDF, "tools" when the reader's Tools leaves it for Choose a tool.
     var discardWork by rememberSaveable { mutableStateOf<String?>(null) }
     // Set when PDFs or documents were shared while a PDF tool had a PDF that would be lost by leaving it.
     var confirmShare by rememberSaveable { mutableStateOf(false) }
+    // The launcher shortcut used (its ShortcutTarget's id) while a PDF tool had work that opening the
+    // shortcut's screen would throw away: asked about first (see shortcutScene).
+    var confirmShortcut by rememberSaveable { mutableStateOf<String?>(null) }
     // The tool showing was opened from Choose a tool, which it goes back to.
     var toolFromShare by rememberSaveable { mutableStateOf(false) }
     // The converter showing was opened for Word, PowerPoint, Excel or EPUB files shared to Usugami.
     var docsFromShare by rememberSaveable { mutableStateOf(false) }
     // Said once that the files shared open when the PDF being made is done.
     var toldShareWaits by rememberSaveable { mutableStateOf(false) }
+    // Where the file in the reader was opened from (a ReadFrom's name), which is where Back leads;
+    // null for a PDF chosen on Choose a tool.
+    var readerFrom by rememberSaveable { mutableStateOf<String?>(null) }
+    // Back left the reader for the app that opened its file: Usugami is stepping behind that app,
+    // and the reader is put away once it no longer shows (see finishLeaving).
+    var leavingToSender by rememberSaveable { mutableStateOf(false) }
+    // The path of the result's PDF being looked at in a preview (a result screen's Open); null when none is.
+    var previewing by rememberSaveable { mutableStateOf<String?>(null) }
+    // Counts the previews opened. Each is a screen of its own, also when one is opened while the last is
+    // still sliding away: it shows "Opening…" and then its own PDF, from its first page.
+    var previewOpening by rememberSaveable { mutableIntStateOf(0) }
     // Back in the editor asks whether to discard its images. Files shared meanwhile open another
     // screen, which the question doesn't belong to: it goes.
     var confirmDiscard by rememberSaveable { mutableStateOf(false) }
@@ -159,6 +221,7 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
             stayOnPdf = false
             discardWork = null
             confirmShare = false
+            confirmShortcut = null
         }
     }
     // How many images there were when the list last changed. Restored with the activity, so the list
@@ -200,10 +263,12 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     // rather than to an empty editor: the camera closed without a photo, the photo discarded, or
     // nothing picked could be added. The view model is asked as it is now: its flows reach the screen
     // one at a time.
-    LaunchedEffect(scanFromHome, route, items.isEmpty(), pendingImports, openingCrop, crop, scan, cameraOpen) {
+    LaunchedEffect(scanFromHome, route, items.isEmpty(), pendingImports, openingCrop, crop, scan, cameraOpen, card) {
         if (!scanFromHome || route != "images" || vm.scanUnderWay()) return@LaunchedEffect
         if (vm.items.value.isNotEmpty()) scanFromHome = false else if (vm.pendingImports.value == 0) route = "home"
     }
+    // An ID card flow is never left behind Home (see afterTool), where nothing could show it again.
+    LaunchedEffect(route) { if (route == "home") vm.endCard() }
     // Scan document's Upload images: the images picked are added, and cropped one after another.
     // Nothing picked leaves Home as it was.
     val scanPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
@@ -215,6 +280,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
             }
         }
     }
+    // The ID card flow's Choose image: one image, the side its prompt asks for.
+    val cardPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) vm.cardImage(uri) }
     // The phone's own camera app takes the photos, into a file Usugami gives it: Usugami needs no
     // camera permission. Also when Android closed Usugami while it was open, this comes back.
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture(), vm::photoTaken)
@@ -231,7 +298,7 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     val pdfAddPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null && route == pickingFor) pdfVm.addPdfs(listOf(uri), replace = false)
     }
-    // Edit PDF's pictures, from the system photo picker (or the file picker where there is none).
+    // Annotate's pictures (the reader's), from the system photo picker (or the file picker where there is none).
     val picturePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null && route == pickingFor) pdfVm.addPicture(uri)
     }
@@ -240,7 +307,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
         val kind = PdfTool.entries.firstOrNull { it.name.equals(route, ignoreCase = true) }?.officeKind
         if (kind != null && route == pickingFor) pdfVm.addDocuments(uris, kind)
     }
-    val createDocument = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(PdfSaver.PDF_MIME)) { uri ->
+    // "Save as" for one file of a result, offered as what it is: a PDF, an image or a text file.
+    val createDocument = rememberLauncherForActivityResult(CreateFileDocument()) { uri ->
         if (uri != null) {
             if (route == "images") vm.saveTo(uri) else pdfVm.saveTo(uri)
         }
@@ -255,12 +323,38 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
             if (route == "images") vm.saveZipTo(uri) else pdfVm.saveZipTo(uri)
         }
     }
+    // Home's Documents to PDF: the files picked are sorted by kind, then open their converter (see
+    // vm.pickedDocuments). Not when the user left Home before the picker covered Usugami.
+    val documentsPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (route == "home" && pickingFor == "home") vm.pickDocuments(uris)
+    }
+    // Home's Read and annotate: the file picked opens in the reader. Nothing picked leaves Home as it was.
+    val openPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && route == "home" && pickingFor == "home") vm.open(uri, null, ReadFrom.HOME)
+    }
 
-    // Images shared while the user stayed with a tool's PDF wait for them in the editor.
-    fun afterTool(): String = if (vm.items.value.isNotEmpty() || vm.pendingImports.value > 0) "images" else "home"
+    // Images shared while the user stayed with a tool's PDF wait for them in the editor, and an ID card
+    // flow (a tool opened over its prompt for files shared or opened) waits there too.
+    fun afterTool(): String = if (vm.items.value.isNotEmpty() || vm.pendingImports.value > 0 || vm.card.value != null) "images" else "home"
 
-    /** Where the shared files waiting, or else being copied in, open (see [sharedRoute]); null for none. */
-    fun shareTarget(): String? = sharedRoute(SharedFiles.chosen(vm.sharedFiles.value.map { it.kind }) ?: vm.sharing.value)
+    /**
+     * Where the shared files waiting, or else being copied in, open (see [sharedRoute]); null for none.
+     * A file opened, coming in or waiting, opens in the reader.
+     */
+    fun shareTarget(): String? {
+        if (vm.reading.value != null) return "reader"
+        return sharedRoute(SharedFiles.chosen(vm.sharedFiles.value.map { it.kind }) ?: vm.sharing.value)
+    }
+
+    /** Usugami went behind the app whose file it showed: the reader is put away, and its file freed. */
+    fun finishLeaving() {
+        if (!leavingToSender) return
+        leavingToSender = false
+        if (route == "reader") {
+            route = afterTool()
+            pdfVm.reset()
+        }
+    }
 
     // Another app's screen opens once per burst of taps (see ScreenOpener).
     val opener = remember { ScreenOpener() }
@@ -269,8 +363,11 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> opener.covered()
                 Lifecycle.Event.ON_RESUME -> opener.back()
-                // Files may be deleted, moved or renamed while Usugami is away.
-                Lifecycle.Event.ON_STOP -> recent.checkAgain()
+                Lifecycle.Event.ON_STOP -> {
+                    // Files may be deleted, moved or renamed while Usugami is away.
+                    recent.checkAgain()
+                    finishLeaving()
+                }
                 else -> Unit
             }
         }
@@ -296,6 +393,19 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
 
     fun openDonate() = launch(R.string.msg_no_browser) { context.startActivity(Intent(Intent.ACTION_VIEW, DONATE_URL.toUri())) }
 
+    // No Print anywhere on a phone without printing.
+    val canPrint = remember(context) { PdfPrinting.available(context) }
+    val scope = rememberCoroutineScope()
+
+    /** Opens Android's print screen for a PDF, once per burst of taps (see ScreenOpener). */
+    fun startPrint(name: String, open: () -> InputStream) {
+        if (!opener.open()) return
+        if (!onPrint(name, open)) {
+            opener.notOpened()
+            vm.showMessage(R.string.msg_no_printing)
+        }
+    }
+
     // The listed file Usugami found it can no longer open, whose dialog shows.
     var lostFile by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -318,10 +428,41 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
         }
     }
 
+    /** Prints a listed file; one Usugami can no longer read gets the dialog that says so, as Open does. */
+    fun printRecent(file: RecentFile) {
+        if (file.uri in recent.unreachable.value) {
+            lostFile = file.uri
+            return
+        }
+        scope.launch {
+            // Looked at first, off the main thread, so the print screen never opens on a file that has gone.
+            val readable = withContext(Dispatchers.IO) { recent.canRead(file) }
+            // The user may have left the list, or Usugami, meanwhile: neither the print screen nor the dialog
+            // opens over another screen or app. Print is tapped again once back.
+            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || (route != "home" && route != "recent")) return@launch
+            if (readable) startPrint(file.name) { recent.open(file) } else lostFile = file.uri
+        }
+    }
+
     val recentActions = RecentFileActions(
-        open = { file -> launchRecent(file, if (file.type == ZipArchive.MIME) R.string.msg_no_zip_app else R.string.msg_no_pdf_app) { recent.viewIntent(file) } },
-        share = { file -> launchRecent(file, R.string.msg_no_share_app) { recent.shareIntent(file) } },
+        // A PDF opens in the reader, and Back leads back to the list it was tapped in. Other files (a ZIP
+        // file, images, text) open in another app, as before: Usugami doesn't open those.
+        open = { file ->
+            if (file.type != PdfSaver.PDF_MIME) {
+                launchRecent(file, noAppToOpen(file.type)) { recent.viewIntent(file) }
+            } else if (file.uri in recent.unreachable.value) {
+                lostFile = file.uri
+            } else {
+                vm.open(file.uri.toUri(), file.type, if (route == "recent") ReadFrom.RECENT else ReadFrom.HOME)
+            }
+        },
+        // As for a tool's result; a ZIP file keeps the message it had.
+        share = { file ->
+            val noApp = if (OutputType.ofMime(file.type) == OutputType.PDF) R.string.msg_no_share_app else R.string.msg_no_share_app_files
+            launchRecent(file, noApp) { recent.shareIntent(file) }
+        },
         remove = recent::remove,
+        print = if (canPrint) ::printRecent else null,
     )
 
     /**
@@ -369,6 +510,9 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
         }
         toolFromShare = false
         docsFromShare = target != "share"
+        // The reader is left for where its file was opened from.
+        readerFrom = if (target == "reader") vm.reading.value else null
+        leavingToSender = false
         toldShareWaits = false
         // What was asked about the last tool, and the choice to stay with its PDF, go with it: also when
         // a converter opens, a tool's route, which doesn't clear them as other routes do.
@@ -377,7 +521,120 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
         discardWork = null
         confirmShare = false
         confirmDiscard = false
+        confirmShortcut = null
         route = target
+    }
+
+    /** Opens [tool] from Home, empty: the last tool's choices are forgotten. */
+    fun openTool(tool: PdfTool) {
+        pdfVm.reset()
+        // The last tool's choices are forgotten, also while its screen is still sliding away.
+        toolStates.removeState(toolStateKey(toolOpening))
+        toolOpening++
+        toolFromShare = false
+        docsFromShare = false
+        route = tool.name.lowercase()
+    }
+
+    /** Starts a scan from Home: the camera opens over the editor, where its photo is added. */
+    fun startScan() {
+        if (takePhoto()) {
+            vm.newScan()
+            route = "images"
+            scanFromHome = true
+        }
+    }
+
+    /** Where Usugami is for a launcher shortcut used now (see ShortcutRules). The view models are asked as they are now. */
+    fun shortcutScene(): ShortcutScene {
+        // The reader's route gives PdfTool.READER: a tool here, whose file only being read is put away.
+        val tool = PdfTool.entries.firstOrNull { it.name.equals(route, ignoreCase = true) }
+        return ShortcutScene(
+            place = when {
+                tool != null -> ShortcutPlace.TOOL
+                route == "images" -> ShortcutPlace.EDITOR
+                route == "share" -> ShortcutPlace.CHOOSE_TOOL
+                else -> ShortcutPlace.HOME
+            },
+            working = pdfVm.processing.value || vm.progress.value != null,
+            // Files shared are waiting or being copied in, a file opened is on its way to the reader, or a
+            // "Discard?" question shows: those come first.
+            waiting = vm.sharedFiles.value.isNotEmpty() || vm.sharing.value != null || vm.reading.value != null ||
+                confirmShare || confirmLeavePdf || discardWork != null || confirmDiscard || confirmShortcut != null,
+            // As files shared to Usugami ask: over a result not saved yet, or work done on the tool's PDF (in
+            // the reader, Annotate's additions not saved).
+            unsaved = tool != null && (if (pdfVm.result.value != null) !pdfVm.saved.value else pdfVm.hasUnsavedWork(tool)),
+            // No photo is added while a scan's page is still on its way (the camera, the crop screen).
+            editorIdle = route == "images" && vm.result.value == null && !vm.scanUnderWay(),
+        )
+    }
+
+    /**
+     * Opens [target]'s screen for a launcher shortcut, as its Home tile or Scan document's Take photo
+     * does. What showed goes, as Back would let it go; the images in the editor wait there for Back.
+     */
+    fun runShortcut(target: ShortcutTarget) {
+        // Choose a tool's PDFs go, as Back from it lets them go (the screen opened frees them).
+        if (route == "share") vm.dropShares()
+        stayOnPdf = false
+        confirmLeavePdf = false
+        discardWork = null
+        confirmShare = false
+        confirmDiscard = false
+        confirmShortcut = null
+        when (target) {
+            // A scan still going on behind a tool or Choose a tool (the crop screen, the next image of
+            // several) is shown again: a new scan would drop its look, and its photo would skip the crop
+            // screen. Otherwise the camera opens; with no camera app, Usugami says so and stays where it was.
+            ShortcutTarget.SCAN -> if (vm.scanUnderWay()) {
+                toolFromShare = false
+                docsFromShare = false
+                route = "images"
+            } else {
+                startScan()
+            }
+            // A tool left for the editor frees its files once the editor has settled.
+            ShortcutTarget.IMAGES -> {
+                toolFromShare = false
+                docsFromShare = false
+                route = "images"
+            }
+            ShortcutTarget.MERGE -> openTool(PdfTool.MERGE)
+            ShortcutTarget.COMPRESS -> openTool(PdfTool.COMPRESS)
+        }
+    }
+
+    // A launcher shortcut used (see MainActivity.handleShortcut) is acted on once Usugami shows, then
+    // forgotten. Declared after the effect that lets taps open screens again once Usugami is back
+    // (opener), so that the camera the Scan shortcut asks for opens also when Usugami was in the background.
+    LaunchedEffect(vm, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            vm.shortcut.collect { pending ->
+                if (pending == null) return@collect
+                val target = vm.takeShortcut() ?: return@collect
+                when (ShortcutRules.step(target, shortcutScene())) {
+                    ShortcutStep.OPEN -> runShortcut(target)
+                    // As the editor's own Take photo: the photo joins its images.
+                    ShortcutStep.ADD_PHOTO -> takePhoto()
+                    ShortcutStep.ASK -> confirmShortcut = target.id
+                    // Not remembered: it would ask "Discard?" minutes later, when the job ends.
+                    ShortcutStep.BUSY -> vm.showMessage(R.string.shortcut_busy)
+                    ShortcutStep.STAY -> Unit
+                }
+            }
+        }
+    }
+
+    // The files picked with Documents to PDF open their converter, as its Home tile used to, and go in
+    // as files picked there do: Back from it goes Home.
+    val pickedDocuments by vm.pickedDocuments.collectAsStateWithLifecycle()
+    LaunchedEffect(pickedDocuments) {
+        val pick = vm.takePickedDocuments() ?: return@LaunchedEffect
+        // Only from Home, where they were picked: the user may have opened something else while they were sorted.
+        if (route != "home") return@LaunchedEffect
+        val tool = PdfTool.entries.first { it.name.equals(sharedRoute(pick.kind), ignoreCase = true) }
+        openTool(tool)
+        pdfVm.addDocuments(pick.uris, tool.officeKind!!)
     }
 
     /**
@@ -385,18 +642,33 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
      * tool was opened from it, with its PDFs (the images shared meanwhile wait, as Back from there
      * leads to them); else for those images, in the editor; else for Home.
      */
-    fun exitTool() {
+    fun exitTool(toSender: Boolean = true) {
         val target = shareTarget()
         // Leaving the tool shared files are being copied in for, the user doesn't want them any more.
-        if (target == route) vm.dropShares() else if (target != null) return openForShare(target)
+        // The reader, left while a file opened meanwhile waits, shows that file; left before its own
+        // file came in, that file is no longer wanted.
+        val another = target == "reader" && route == "reader" && pdfVm.readerHasFile
+        if (target == route && !another) vm.dropShares() else if (target != null) return openForShare(target)
         docsFromShare = false
         val tool = PdfTool.entries.firstOrNull { it.name.equals(route, ignoreCase = true) }
-        route = when {
+        val reader = tool == PdfTool.READER && !toolFromShare
+        val next = when {
             toolFromShare && tool != null && (pdfVm.inputs.value.isNotEmpty() || pdfVm.locked.value.isNotEmpty()) -> {
                 pdfVm.clearToolWork(tool)
                 "share"
             }
+            reader && readerFrom == ReadFrom.RECENT.name -> "recent"
             else -> afterTool()
+        }
+        // A file another app opened: Usugami steps behind that app, and the reader is put away once it no longer shows.
+        if (toSender && reader && readerFrom == ReadFrom.OUTSIDE.name && onLeaveToBack()) leavingToSender = true else route = next
+    }
+
+    // Where Usugami never stops on stepping behind the app (split screen), the reader goes after a moment.
+    LaunchedEffect(leavingToSender) {
+        if (leavingToSender) {
+            delay(1_000)
+            finishLeaving()
         }
     }
 
@@ -406,10 +678,50 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
         route = afterTool()
     }
 
+    /** Starts [intent], another app's screen, as [launch] does; [noApp] is said when no app can handle it. */
+    fun startScreen(@StringRes noApp: Int, intent: Intent) = launch(noApp) { context.startActivity(intent) }
+
+    /**
+     * Hands the reader's file [input], under its own name, to another app: [intent] makes the screen to
+     * start for the copy, and names the message for a phone with no such app.
+     */
+    fun handOver(input: PdfInput, intent: (PdfFile) -> Pair<Intent, Int>) {
+        // One at a time: a tap while the copy is still being made opens nothing more. Started at once, so
+        // that a second tap in the same frame already finds the copy under way.
+        if (pdfVm.reader.handingOver.value) return
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val copy = pdfVm.reader.shareCopy(input)
+            // Not over another screen or app, nor for another file: the reader may have been left, or
+            // shown another file, meanwhile. Tapped again once back.
+            if (route != "reader" || pdfVm.inputs.value.firstOrNull()?.id != input.id) return@launch
+            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@launch
+            if (copy == null) return@launch vm.showMessage(R.string.pdf_process_failed)
+            val (start, noApp) = intent(PdfFile(copy, input.pageCount, 0))
+            startScreen(noApp, start)
+        }
+    }
+
+    /** The reader's Tools: Choose a tool, with the reader's PDF in it. Back from there goes Home. */
+    fun openTools() {
+        pdfVm.clearToolWork(PdfTool.READER)
+        toolFromShare = false
+        docsFromShare = false
+        readerFrom = null
+        route = "share"
+    }
+
+    /** A result screen's Open: [file], a PDF, shows in a preview, over the result, which stays as it is. */
+    fun preview(file: PdfFile) {
+        // Not when it is opened again after Android restarted Usugami, nor by a second tap on Open.
+        if (previewing == null) previewOpening++
+        previewing = file.file.path
+        pdfVm.reader.openPreview(file) { previewing = null }
+    }
+
     // PDFs, Word, PowerPoint, Excel and EPUB files shared to Usugami open where they belong (see [sharedRoute]).
     // Leaving a PDF tool discards its PDF, so a tool with work that isn't saved asks first, and a PDF
     // being made is waited for. Once copied in, the files go to the tool that opened for them.
-    LaunchedEffect(sharedFiles, sharing, route, pdfResult != null, pdfProcessing, progress != null, pdfImporting, confirmShare, stayOnPdf) {
+    LaunchedEffect(sharedFiles, sharing, reading, route, pdfResult != null, pdfProcessing, progress != null, pdfImporting, confirmShare, stayOnPdf) {
         val target = shareTarget()
         if (target == null) {
             confirmShare = false
@@ -420,11 +732,13 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
         if (pdfVm.processing.value || vm.progress.value != null) {
             if (!toldShareWaits) {
                 toldShareWaits = true
-                vm.showMessage(R.string.share_waits)
+                vm.showMessage(if (vm.reading.value != null) R.string.reader_open_waits else R.string.share_waits)
             }
             return@LaunchedEffect
         }
-        if (route != target || pdfVm.result.value != null) {
+        // The reader gives way to the next file opened: it is another file, not more for the one showing.
+        val another = target == "reader" && route == "reader" && pdfVm.readerHasFile
+        if (route != target || pdfVm.result.value != null || another) {
             val tool = PdfTool.entries.firstOrNull { it.name.equals(route, ignoreCase = true) }
             if (tool != null) {
                 // The user chose to stay with the tool's PDF: the files wait until they leave it.
@@ -455,23 +769,39 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     // slide direction.
     // A tool opened from Choose a tool ("share") sits one level deeper than it. The crop screen sits
     // beside the editor's result; a scan of images picked keeps it showing while its next image is
-    // awaited.
-    val screen = when {
+    // awaited. The ID card flow's prompt ("images/card") sits beside them.
+    val base = when {
         route == "home" || route.startsWith("settings") || route == "share" || route == "recent" -> route
         route == "images" -> when {
             result != null -> "images/result"
             crop != null || scan != null -> "images/crop"
+            card != null -> "images/card"
             else -> "images"
         }
         else -> (if (toolFromShare) "share/" else "") + if (pdfResult == null) route else "$route/result"
     }
+    // A result's PDF looked at in a preview sits one level deeper than the result.
+    val screen = if (previewing != null && base.endsWith("/result")) "$base/view" else base
+    // The preview goes with the result (cleared, started over, files shared or opened over it). After
+    // Android restarted Usugami it opens again; it is opened once however often this runs.
+    LaunchedEffect(base, previewing, result, pdfResult) {
+        val path = previewing ?: return@LaunchedEffect
+        val file = if (base.endsWith("/result")) (if (route == "images") result else pdfResult)?.firstOrNull { it.file.path == path } else null
+        if (file != null) {
+            preview(file)
+        } else {
+            previewing = null
+            pdfVm.reader.closePreview()
+        }
+    }
     // Where shared files are going, for the screen they open in to say more are coming.
-    val receivingFor = sharedRoute(SharedFiles.chosen(sharedFiles.map { it.kind }) ?: sharing)
+    val receivingFor = if (reading != null) "reader" else sharedRoute(SharedFiles.chosen(sharedFiles.map { it.kind }) ?: sharing)
 
     AnimatedContent(
         targetState = Shown(
             screen,
             when {
+                screen.endsWith("/view") -> previewOpening
                 isPdfToolRoute(route) -> toolOpening
                 screen == "images/crop" -> cropOpening
                 else -> 0
@@ -492,10 +822,10 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                 // The files listed are looked over while they show, once each time Usugami comes back.
                 LaunchedEffect(recent, lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { recent.check() } }
             }
-            if (current == "home" || current.startsWith("images")) {
-                // Once a PDF tool's screens have gone (the user went home, or shared images opened the
-                // editor), nothing of that tool can be shown again: opening a tool starts afresh. Its
-                // copies and results are freed as soon as the new screen has settled. Not when files shared
+            if (current == "home" || current == "recent" || current.startsWith("images")) {
+                // Once a PDF tool's screens have gone (the user went home or to Recent files, or shared
+                // images opened the editor), nothing of that tool can be shown again: opening a tool starts
+                // afresh. Its copies and results are freed as soon as the new screen has settled. Not when files shared
                 // to Usugami opened a tool meanwhile, even before this screen was first drawn.
                 val settled = transition.currentState == EnterExitState.Visible && transition.targetState == EnterExitState.Visible
                 LaunchedEffect(settled) { if (settled && route == current.substringBefore('/')) pdfVm.reset() }
@@ -508,13 +838,13 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                         snackbar = screenSnackbar,
                         query = homeQuery,
                         onQueryChange = { homeQuery = it },
-                        // The camera opens over the editor, where its photo is added.
-                        onScanPhoto = {
-                            if (takePhoto()) {
-                                vm.newScan()
-                                route = "images"
-                                scanFromHome = true
-                            }
+                        onScanPhoto = ::startScan,
+                        // Its prompt shows over the editor, which a scan from Home leaves for Home if it adds nothing.
+                        onScanCard = {
+                            vm.newScan()
+                            vm.startCard()
+                            route = "images"
+                            scanFromHome = true
                         },
                         onScanUpload = {
                             launch(R.string.msg_no_picker) {
@@ -525,16 +855,20 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                         recentActions = recentActions,
                         onAllRecentFiles = { route = "recent" },
                         onImages = { route = "images" },
-                        onTool = { tool ->
-                            pdfVm.reset()
-                            // The last tool's choices are forgotten, also while its screen is still sliding away.
-                            toolStates.removeState(toolStateKey(toolOpening))
-                            toolOpening++
-                            toolFromShare = false
-                            docsFromShare = false
-                            route = tool.name.lowercase()
+                        onDocuments = {
+                            launch(R.string.msg_no_picker) {
+                                pickingFor = "home"
+                                documentsPicker.launch(DocumentSorter.pickerTypes)
+                            }
                         },
+                        onTool = ::openTool,
                         onSettings = { route = "settings" },
+                        onOpenFile = {
+                            launch(R.string.msg_no_picker) {
+                                pickingFor = "home"
+                                openPicker.launch(ReaderTypes)
+                            }
+                        },
                     )
                 }
                 current == "recent" -> {
@@ -624,7 +958,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                             changeLayout = vm::setLayout,
                             rotate = vm::rotate,
                             crop = vm::openCrop,
-                            remove = vm::remove,
+                            remove = vm::removePage,
+                            addCardBack = vm::addCardBack,
                             move = vm::move,
                             moveBy = vm::moveBy,
                             sort = vm::sort,
@@ -658,6 +993,50 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                         )
                     }
                 }
+                current == "images/card" -> {
+                    // Cancel on the front's prompt, No back side or Back. A flow started on Home that added
+                    // nothing goes straight back Home, not by way of the empty editor.
+                    val end: () -> Unit = {
+                        vm.endCard()
+                        if (scanFromHome && vm.items.value.isEmpty() && vm.pendingImports.value == 0 && !vm.scanUnderWay()) route = "home"
+                    }
+                    BackHandler(enabled = active, onBack = end)
+                    // The side's photo or image is on its way, or its page being looked for.
+                    val busy = cameraOpen || openingCrop || pendingImports > cropping.size
+                    IdCardScreen(
+                        // The side asked for until its crop screen has come: the view model already wants
+                        // the back once the front is in, a moment before.
+                        side = freezeWhen(!active || busy, card)?.side ?: CardSide.FRONT,
+                        busy = busy,
+                        snackbar = screenSnackbar,
+                        onTakePhoto = { takePhoto() },
+                        onChooseImage = {
+                            launch(R.string.msg_no_picker) {
+                                cardPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }
+                        },
+                        onEnd = end,
+                    )
+                }
+                current.endsWith("/result/view") -> {
+                    val close = {
+                        previewing = null
+                        pdfVm.reader.closePreview()
+                    }
+                    BackHandler(enabled = active, onBack = close)
+                    val file = (if (route == "images") result else pdfResult)?.firstOrNull { it.file.path == previewing }
+                    ReaderScreen(
+                        vm = pdfVm,
+                        preview = true,
+                        active = active,
+                        receiving = false,
+                        snackbar = screenSnackbar,
+                        actions = ReaderActions(
+                            back = close,
+                            openElsewhere = file?.let { pdf -> { startScreen(R.string.msg_no_pdf_app, pdfVm.viewElsewhereIntent(pdf)) } },
+                        ),
+                    )
+                }
                 current == "images/result" -> {
                     val files = freezeWhen(!active, result) ?: emptyList()
                     BackHandler(enabled = active) { vm.backToEditing() }
@@ -668,13 +1047,18 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                         snackbar = screenSnackbar,
                         actions = ResultActions(
                             back = vm::backToEditing,
-                            open = { file -> if (vm.checkResult()) launch(R.string.msg_no_pdf_app) { context.startActivity(vm.viewIntent(file)) } },
+                            // A PDF shows in a preview inside Usugami.
+                            open = { file ->
+                                if (vm.checkResult()) {
+                                    if (file.isPdf) preview(file) else launch(R.string.msg_no_pdf_app) { context.startActivity(vm.viewIntent(file)) }
+                                }
+                            },
                             share = { if (vm.checkResult()) launch(R.string.msg_no_share_app) { context.startActivity(vm.shareIntent(files)) } },
                             saveToDownloads = if (vm.canSaveToDownloads) vm::saveToDownloads else null,
                             saveAs = {
                                 if (vm.checkResult()) {
                                     launch(R.string.msg_no_file_picker) {
-                                        if (files.size == 1) createDocument.launch(files[0].name) else pickFolder.launch(null)
+                                        if (files.size == 1) createDocument.launch(files[0]) else pickFolder.launch(null)
                                     }
                                 }
                             },
@@ -688,6 +1072,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                             },
                             setMark = vm::setMark,
                             setMarkStyle = vm::setMarkStyle,
+                            // What Open would show: the file as the mark was last put on or taken off.
+                            print = { file: PdfFile -> if (vm.checkResult()) startPrint(file.name) { FileInputStream(file.file) } }.takeIf { canPrint },
                         ),
                         zipProgress = zipProgress,
                         mark = mark,
@@ -697,6 +1083,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                 }
                 current.endsWith("/result") -> {
                     val files = freezeWhen(!active, pdfResult) ?: emptyList()
+                    // Start over forgets the notes as the screen starts to slide away with its files.
+                    val notes = freezeWhen(!active, fromPdfNotes)
                     BackHandler(enabled = active) { pdfVm.backToEditing() }
                     ResultScreen(
                         files = files,
@@ -705,15 +1093,20 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                         snackbar = screenSnackbar,
                         actions = ResultActions(
                             back = pdfVm::backToEditing,
-                            open = { file -> if (pdfVm.checkResult()) launch(R.string.msg_no_pdf_app) { context.startActivity(pdfVm.viewIntent(file)) } },
-                            share = { if (pdfVm.checkResult()) launch(R.string.msg_no_share_app) { context.startActivity(pdfVm.shareIntent(files)) } },
+                            // A PDF shows in a preview inside Usugami; images and text files open in another app.
+                            open = { file ->
+                                if (pdfVm.checkResult()) {
+                                    if (file.isPdf) preview(file) else launch(noAppToOpen(file.type.mime)) { context.startActivity(pdfVm.viewIntent(file)) }
+                                }
+                            },
+                            share = { if (pdfVm.checkResult()) launch(noAppToShare(files)) { context.startActivity(pdfVm.shareIntent(files)) } },
                             saveToDownloads = if (pdfVm.canSaveToDownloads) pdfVm::saveToDownloads else null,
                             saveAs = {
                                 if (pdfVm.checkResult()) {
                                     launch(R.string.msg_no_file_picker) {
                                         if (files.size == 1) {
                                             pdfVm.prepareSaveAs(null)
-                                            createDocument.launch(files[0].name)
+                                            createDocument.launch(files[0])
                                         } else {
                                             pickFolder.launch(null)
                                         }
@@ -729,67 +1122,108 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
                                 }
                             },
                             // Each PDF of several also has Share and Save buttons of its own.
-                            shareOne = { file -> if (pdfVm.checkResult()) launch(R.string.msg_no_share_app) { context.startActivity(pdfVm.shareIntent(listOf(file))) } },
+                            shareOne = { file -> if (pdfVm.checkResult()) launch(noAppToShare(listOf(file))) { context.startActivity(pdfVm.shareIntent(listOf(file))) } },
                             saveOneToDownloads = if (pdfVm.canSaveToDownloads) pdfVm::saveOneToDownloads else null,
                             saveOneAs = { file ->
                                 if (pdfVm.checkResult()) {
                                     launch(R.string.msg_no_file_picker) {
                                         pdfVm.prepareSaveAs(file)
-                                        createDocument.launch(file.name)
+                                        createDocument.launch(file)
                                     }
                                 }
                             },
                             setMark = pdfVm::setMark,
                             setMarkStyle = pdfVm::setMarkStyle,
+                            print = { file: PdfFile -> if (pdfVm.checkResult()) startPrint(file.name) { FileInputStream(file.file) } }.takeIf { canPrint },
+                            copyText = pdfVm::copyResultText,
                         ),
                         zipProgress = pdfZipProgress,
-                        note = if (pdfPasswordRemoved) pluralStringResource(R.plurals.pdf_password_removed, files.size) else null,
+                        // Said of PDFs only, and the notes of PDF to images or text's images or text only: never both.
+                        note = if (pdfPasswordRemoved) pluralStringResource(R.plurals.pdf_password_removed, files.size) else exportNotesText(notes),
                         savedFiles = pdfSavedFiles,
                         mark = mark,
                         marking = pdfMarking,
                         markPreview = pdfMarkPreview,
+                        text = textPreviewOf(files),
                     )
                 }
                 else -> {
-                    val tool = PdfTool.entries.first { it.name.equals(current, ignoreCase = true) }
-                    val leaveTool: () -> Unit = { if (pdfVm.hasUnsavedWork(tool)) discardWork = "leave" else exitTool() }
-                    BackHandler(enabled = active, onBack = leaveTool)
-                    toolStates.SaveableStateProvider(toolStateKey(shown.opening)) {
-                        PdfToolScreen(
-                            tool = tool,
-                            vm = pdfVm,
-                            // Files shared to Usugami are being copied in for it.
-                            receiving = receivingFor == current && pdfResult == null,
-                            snackbar = screenSnackbar,
-                            onBack = leaveTool,
-                            onRemove = { if (pdfVm.hasUnsavedWork(tool)) discardWork = "remove" else pdfVm.startOver() },
-                            pickSingle = {
-                                launch(R.string.msg_no_picker) {
-                                    pickingFor = current
-                                    pdfPicker.launch(arrayOf(PdfSaver.PDF_MIME))
+                    val tool = PdfTool.entries.firstOrNull { it.name.equals(current, ignoreCase = true) }
+                    if (tool == null) {
+                        // A route no tool has, kept from a version that had other tools: Home.
+                        LaunchedEffect(current) { route = "home" }
+                    } else {
+                        val leaveTool: () -> Unit = { if (pdfVm.hasUnsavedWork(tool)) discardWork = "leave" else exitTool() }
+                        BackHandler(enabled = active, onBack = leaveTool)
+                        toolStates.SaveableStateProvider(toolStateKey(shown.opening)) {
+                            if (tool == PdfTool.READER) {
+                                // With no file left (it couldn't be opened, was put away, or its copy was cleared), the
+                                // reader goes: not behind another app, so the message shows. Not while Usugami steps
+                                // behind the app that opened the file (Cancel during "Opening…"): finishLeaving() puts
+                                // the reader away then. The view models are asked as they are now: their flows reach
+                                // the screen one at a time.
+                                val none = pdfInputs.isEmpty() && pdfLocked.isEmpty() && pdfDocuments.isEmpty() && !pdfImporting && receivingFor != "reader"
+                                LaunchedEffect(none, active, leavingToSender) {
+                                    if (none && active && !leavingToSender && route == "reader" && !pdfVm.readerHasFile && shareTarget() != "reader") exitTool(toSender = false)
                                 }
-                            },
-                            // Word, PowerPoint, Excel and EPUB to PDF take several files of their kind.
-                            pickMultiple = {
-                                val kind = tool.officeKind
-                                launch(R.string.msg_no_picker) {
-                                    pickingFor = current
-                                    if (kind != null) documentPicker.launch(kind.pickerTypes) else pdfMultiPicker.launch(arrayOf(PdfSaver.PDF_MIME))
-                                }
-                            },
-                            pickAdd = {
-                                launch(R.string.msg_no_picker) {
-                                    pickingFor = current
-                                    pdfAddPicker.launch(arrayOf(PdfSaver.PDF_MIME))
-                                }
-                            },
-                            pickPicture = {
-                                launch(R.string.msg_no_picker) {
-                                    pickingFor = current
-                                    picturePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                }
-                            },
-                        )
+                                val input = pdfInputs.singleOrNull()
+                                // A PDF opened as it is, not one made of a document: that one is shared and printed from
+                                // the result Save as PDF leads to, with the Usugami mark when it is on.
+                                val plain = input?.takeIf { readerSource?.first != it.id }
+                                ReaderScreen(
+                                    vm = pdfVm,
+                                    preview = false,
+                                    active = active,
+                                    // A file opened is being copied in for it, or waits to be shown.
+                                    receiving = receivingFor == "reader" && pdfResult == null,
+                                    snackbar = screenSnackbar,
+                                    actions = ReaderActions(
+                                        back = leaveTool,
+                                        share = plain?.let { pdf -> { handOver(pdf) { pdfVm.shareIntent(listOf(it)) to R.string.msg_no_share_app } } },
+                                        // What the reader draws (its view: no password, comments drawn in), so the paper shows what the screen does.
+                                        print = plain?.takeIf { canPrint }?.let { pdf ->
+                                            { readerSession?.takeIf { it.id == pdf.id }?.let { shown -> startPrint(pdf.name) { FileInputStream(shown.document.file) } } }
+                                        },
+                                        tools = { if (pdfVm.hasUnsavedWork(tool)) discardWork = "tools" else openTools() },
+                                        openElsewhere = plain?.let { pdf -> { handOver(pdf) { pdfVm.viewElsewhereIntent(it) to R.string.msg_no_pdf_app } } },
+                                        pickPicture = {
+                                            launch(R.string.msg_no_picker) {
+                                                pickingFor = current
+                                                picturePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                            }
+                                        },
+                                    ),
+                                )
+                            } else PdfToolScreen(
+                                tool = tool,
+                                vm = pdfVm,
+                                // Files shared to Usugami are being copied in for it.
+                                receiving = receivingFor == current && pdfResult == null,
+                                snackbar = screenSnackbar,
+                                onBack = leaveTool,
+                                onRemove = { if (pdfVm.hasUnsavedWork(tool)) discardWork = "remove" else pdfVm.startOver() },
+                                pickSingle = {
+                                    launch(R.string.msg_no_picker) {
+                                        pickingFor = current
+                                        pdfPicker.launch(arrayOf(PdfSaver.PDF_MIME))
+                                    }
+                                },
+                                // Word, PowerPoint, Excel and EPUB to PDF take several files of their kind.
+                                pickMultiple = {
+                                    val kind = tool.officeKind
+                                    launch(R.string.msg_no_picker) {
+                                        pickingFor = current
+                                        if (kind != null) documentPicker.launch(kind.pickerTypes) else pdfMultiPicker.launch(arrayOf(PdfSaver.PDF_MIME))
+                                    }
+                                },
+                                pickAdd = {
+                                    launch(R.string.msg_no_picker) {
+                                        pickingFor = current
+                                        pdfAddPicker.launch(arrayOf(PdfSaver.PDF_MIME))
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -817,6 +1251,7 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     if (showConvertSheet && screen == "images" && items.isNotEmpty()) {
         ConvertSheet(
             imageCount = items.size,
+            pageCount = PageGroups.pages(items) { it.card }.size,
             layout = layout,
             initialMerge = merge,
             initialCompression = compression,
@@ -838,6 +1273,8 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
     ZipProgressDialog(zipProgress, onCancel = vm::cancelZip)
     ZipProgressDialog(pdfZipProgress, onCancel = pdfVm::cancelZip)
     ocrProblem?.let { OcrProblemDialog(it, onDismiss = vm::dismissOcrProblem) }
+    // PDF to images or text's, over its screen: no text was made, and its own switch is the way out.
+    fromPdfOcrProblem?.let { OcrProblemDialog(it, retry = R.string.export_text_ocr_retry, onDismiss = { pdfVm.fromPdf.ocrProblem.value = null }) }
 
     // The dialog belongs to the list: it goes when another screen opens (images shared meanwhile, say),
     // and when the file has left the list.
@@ -882,7 +1319,11 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
             confirmButton = {
                 TextButton(onClick = {
                     discardWork = null
-                    if (action == "leave") exitTool() else pdfVm.startOver()
+                    when (action) {
+                        "leave" -> exitTool()
+                        "tools" -> openTools()
+                        else -> pdfVm.startOver()
+                    }
                 }) { Text(stringResource(R.string.discard)) }
             },
             dismissButton = { TextButton(onClick = { discardWork = null }) { Text(stringResource(R.string.keep)) } },
@@ -894,12 +1335,36 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
             confirmShare = false
             stayOnPdf = true
         }
-        // Asked over changes made to the tool's PDF, rather than over a PDF made.
+        // Asked over changes made to the tool's PDF, rather than over a PDF made; over images or a
+        // text file made, in words of their own.
         val changes = pdfResult == null
+        val notPdf = pdfResult?.none { it.isPdf } == true
+        // A file opened, rather than shared, is said to be so.
+        val opened = reading != null
         AlertDialog(
             onDismissRequest = keepPdf,
-            title = { Text(stringResource(if (changes) R.string.tool_discard_title else R.string.pdf_discard_title)) },
-            text = { Text(stringResource(if (changes) R.string.share_discard_changes else R.string.share_discard_body)) },
+            title = {
+                Text(
+                    stringResource(
+                        when {
+                            changes -> R.string.tool_discard_title
+                            notPdf -> R.string.files_discard_title
+                            else -> R.string.pdf_discard_title
+                        },
+                    ),
+                )
+            },
+            text = {
+                Text(
+                    stringResource(
+                        when {
+                            changes -> if (opened) R.string.reader_open_discard_changes else R.string.share_discard_changes
+                            notPdf -> if (opened) R.string.reader_open_discard_files else R.string.share_discard_body_files
+                            else -> if (opened) R.string.reader_open_discard_body else R.string.share_discard_body
+                        },
+                    ),
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     // Once: a second tap before the dialog has gone finds it answered.
@@ -913,17 +1378,89 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
         )
     }
 
+    // A launcher shortcut used over a tool's work not saved yet: Discard opens the shortcut's screen; Keep,
+    // Back or a tap outside leaves everything as it was, and the shortcut is forgotten.
+    ShortcutTarget.of(confirmShortcut)?.let { target ->
+        // Asked over changes made to the tool's PDF, rather than over a PDF made; over images or a text
+        // file made, in words of their own.
+        val changes = pdfResult == null
+        val notPdf = pdfResult?.none { it.isPdf } == true
+        AlertDialog(
+            onDismissRequest = { confirmShortcut = null },
+            title = {
+                Text(
+                    stringResource(
+                        when {
+                            changes -> R.string.tool_discard_title
+                            notPdf -> R.string.files_discard_title
+                            else -> R.string.pdf_discard_title
+                        },
+                    ),
+                )
+            },
+            text = {
+                Text(
+                    stringResource(
+                        when {
+                            changes -> R.string.shortcut_discard_changes
+                            notPdf -> R.string.shortcut_discard_files
+                            else -> R.string.shortcut_discard_body
+                        },
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    // Once: a second tap before the dialog has gone finds it answered.
+                    if (confirmShortcut != null) {
+                        confirmShortcut = null
+                        runShortcut(target)
+                    }
+                }) { Text(stringResource(R.string.discard)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmShortcut = null }) { Text(stringResource(R.string.keep)) } },
+        )
+    }
+    // Files or images shared meanwhile bring their own question, which takes this one's place: two
+    // questions never lie over each other.
+    LaunchedEffect(confirmShare, confirmLeavePdf) {
+        if (confirmShare || confirmLeavePdf) confirmShortcut = null
+    }
+
     if (confirmLeavePdf) {
         val keepPdf = {
             confirmLeavePdf = false
             stayOnPdf = true
         }
-        // Asked over changes made to the tool's PDF, rather than over a PDF made or being made.
+        // Asked over changes made to the tool's PDF, rather than over a PDF made or being made; over
+        // images or a text file made, in words of their own (while a job runs, what it makes isn't
+        // known yet: the PDF's words stay).
         val changes = pdfResult == null && !pdfProcessing
+        val notPdf = pdfResult?.none { it.isPdf } == true
         AlertDialog(
             onDismissRequest = keepPdf,
-            title = { Text(stringResource(if (changes) R.string.tool_discard_title else R.string.pdf_discard_title)) },
-            text = { Text(stringResource(if (changes) R.string.pdf_discard_shared_changes else R.string.pdf_discard_shared_body)) },
+            title = {
+                Text(
+                    stringResource(
+                        when {
+                            changes -> R.string.tool_discard_title
+                            notPdf -> R.string.files_discard_title
+                            else -> R.string.pdf_discard_title
+                        },
+                    ),
+                )
+            },
+            text = {
+                Text(
+                    stringResource(
+                        when {
+                            changes -> R.string.pdf_discard_shared_changes
+                            notPdf -> R.string.files_discard_shared_body
+                            else -> R.string.pdf_discard_shared_body
+                        },
+                    ),
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     confirmLeavePdf = false
@@ -938,9 +1475,9 @@ fun UsugamiApp(vm: MainViewModel, onChooseLanguage: (AppLanguage) -> Unit, onCho
 
 /**
  * A screen as the screen animation tells them apart: [screen] (see UsugamiApp), and for a PDF tool's
- * screens, which time the tool was opened from Home, for the crop screen which time it opened.
- * Opened again while its last screen is still sliding away, a tool or the crop screen is a new screen
- * rather than that one coming back.
+ * screens, which time the tool was opened from Home, for the crop screen which time it opened, for a
+ * result's preview which preview it is. Opened again while its last screen is still sliding away, a
+ * tool, the crop screen or a preview is a new screen rather than that one coming back.
  */
 private data class Shown(val screen: String, val opening: Int)
 
@@ -1002,6 +1539,25 @@ private fun sharedRoute(kind: SharedKind?): String? = when (kind) {
     SharedKind.EXCEL -> PdfTool.EXCEL.name.lowercase()
     else -> null
 }
+
+/**
+ * What Home's Read and annotate offers in the file picker: PDFs and the documents the reader makes
+ * into PDFs, each type once ("binary data" among them, which some providers call EPUB files).
+ */
+private val ReaderTypes: Array<String> =
+    (listOf(PdfSaver.PDF_MIME) + OfficeKind.entries.flatMap { it.pickerTypes.asList() }).distinct().toTypedArray()
+
+/** What is said when no app on the phone opens a file of the type [mime]. */
+@StringRes
+private fun noAppToOpen(mime: String): Int = if (mime == ZipArchive.MIME) R.string.msg_no_zip_app else when (OutputType.ofMime(mime)) {
+    OutputType.PDF -> R.string.msg_no_pdf_app
+    OutputType.JPEG, OutputType.PNG -> R.string.msg_no_image_app
+    OutputType.TEXT -> R.string.msg_no_text_app
+}
+
+/** What is said when no app on the phone takes [shared], a tool's files, to share: PDFs, or other files. */
+@StringRes
+private fun noAppToShare(shared: List<PdfFile>): Int = if (shared.all { it.isPdf }) R.string.msg_no_share_app else R.string.msg_no_share_app_files
 
 /** Whether [route] is a PDF tool's screen (its result included: that shares the tool's route). */
 private fun isPdfToolRoute(route: String): Boolean = PdfTool.entries.any { it.name.equals(route, ignoreCase = true) }

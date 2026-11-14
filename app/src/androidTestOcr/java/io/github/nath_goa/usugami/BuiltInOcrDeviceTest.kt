@@ -9,6 +9,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
+import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
@@ -22,7 +23,9 @@ import com.tom_roush.pdfbox.text.TextPosition
 import io.github.nath_goa.usugami.data.OcrLanguage
 import io.github.nath_goa.usugami.data.PdfFile
 import io.github.nath_goa.usugami.data.PdfOcr
+import io.github.nath_goa.usugami.data.PdfToolsEngine
 import io.github.nath_goa.usugami.data.ocrEngine
+import io.github.nath_goa.usugami.data.pagesToText
 import io.github.nath_goa.usugami.ocr.NcnnNet
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -134,6 +137,24 @@ class BuiltInOcrDeviceTest {
     }
 
     /**
+     * German and Portuguese are read by the latin model with their umlauts, ß, tildes and cedillas,
+     * which the text layer keeps (each language finds its model's files).
+     */
+    @Test fun readsGermanAndPortugueseLetters() = runBlocking {
+        val lines = listOf("Die Größe der Tür", "Übung für Mädchen", "A ação do coração", "não é só pão e maçã")
+            .mapIndexed { index, line -> Triple(line, 72f, 240f + index * 240f) }
+        val words = listOf("Größe", "Tür", "Übung", "Mädchen", "ação", "coração", "não", "maçã")
+        for (language in listOf(OcrLanguage.GERMAN, OcrLanguage.PORTUGUESE)) {
+            // Made for each language: the PDF read is replaced by the one with the text layer.
+            val page = picturePage("letters_${language.name}.pdf", 1600, 1200, 800, 600, lines)
+            val found = text(ocr(page, language))
+            Log.i(TAG, "letters_${language.name}.pdf read as: ${found.trim().replace('\n', '|')}")
+            val read = found.split(Regex("\\s+")).toSet()
+            for (word in words) assertTrue("$language: missing $word in $found", word in read)
+        }
+    }
+
+    /**
      * A PDF of one [pageWidth] x [pageHeight] page showing a [width] x [height] picture of [lines]
      * (each its text, size and baseline, centred in bold), so that the PDF has no text of its own.
      */
@@ -160,6 +181,27 @@ class BuiltInOcrDeviceTest {
         return file
     }
 
+    /**
+     * PDF to images or text: a page that is only a picture of large printed words has no text of
+     * its own, so it is read with text recognition, and the text file has its words.
+     */
+    @Test fun aScannedPageIsReadForItsText() = runBlocking {
+        val scan = picturePage("scanned_text.pdf", 1600, 1200, 800, 600, listOf(Triple("INVOICE", 140f, 300f), Triple("Total due today", 100f, 700f)))
+        val tools = PdfToolsEngine(context)
+        val input = tools.import(Uri.fromFile(scan), 7901L)
+        try {
+            val outcome = tools.pagesToText(input, listOf(0), engine, OcrLanguage.ENGLISH, "Scan", {}) {}
+            assertEquals(listOf(0), outcome.read)
+            val found = outcome.file.file.readText()
+            Log.i(TAG, "scanned_text.pdf exported as: ${found.trim().replace('\n', '|')}")
+            val read = found.split(Regex("\\s+")).toSet()
+            for (word in listOf("INVOICE", "Total", "due", "today")) assertTrue("Missing $word in $found", word in read)
+        } finally {
+            tools.clearOutput()
+            tools.delete(input)
+        }
+    }
+
     /** A photo made into a PDF at Extreme is read as picked, and its text goes over its lines. */
     @Test fun readsAPhotoAsPicked() = runBlocking {
         PhotoOcrCheck.run(context, engine, dir)
@@ -173,6 +215,11 @@ class BuiltInOcrDeviceTest {
     /** A page in black and white, a bit a pixel, still gets its text layer, and reads as the PDF draws it. */
     @Test fun readsABlackAndWhitePage() = runBlocking {
         BlackAndWhiteOcrCheck.run(context, engine, File(dir, "black-and-white"))
+    }
+
+    /** An ID card's two sides on one page are both read, the page reported once, each side's text over it. */
+    @Test fun readsBothSidesOfAnIdCard() = runBlocking {
+        IdCardOcrCheck.run(context, engine, File(dir, "id-card"))
     }
 
     /** The native bridge turns bad input into exceptions instead of crashing the app. */

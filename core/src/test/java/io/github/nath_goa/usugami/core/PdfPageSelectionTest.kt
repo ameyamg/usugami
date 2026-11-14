@@ -1,6 +1,7 @@
 package io.github.nath_goa.usugami.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -45,11 +46,19 @@ class PdfPageSelectionTest {
         assertEquals(6, assertThrows(PageSelectionException::class.java) { PdfPageSelection.selected("7", 6) }.pageCount)
     }
 
-    @Test fun pagesToDeleteAreSortedAndMustLeaveOne() {
-        assertEquals(listOf(1, 4, 5, 6), PdfPageSelection.toDelete("5-7,2,6", 10))
-        val all = assertThrows(PageSelectionException::class.java) { PdfPageSelection.toDelete("1-3,4", 4) }
-        assertEquals(PageSelectionException.Problem.ALL_PAGES, all.problem)
-        assertEquals(PageSelectionException.Problem.OUT_OF_RANGE, assertThrows(PageSelectionException::class.java) { PdfPageSelection.toDelete("5", 4) }.problem)
+    @Test fun typedPagesAreReadOrSayWhyNot() {
+        // Reorganize PDF's field: blank selects nothing, and while it can't be read nothing changes.
+        assertEquals(emptyList<Int>(), PdfPageSelection.read("", 6))
+        assertEquals(listOf(1, 4, 5), PdfPageSelection.read("2,5-6", 6))
+        assertNull(PdfPageSelection.read("2,", 6))
+        assertNull(PdfPageSelection.read("1", 0))
+        assertNull(PdfPageSelection.problem("", 6))
+        assertNull(PdfPageSelection.problem("2,5-6", 6))
+        assertEquals(PageSelectionException.Problem.FORMAT, PdfPageSelection.problem("2,", 6)?.problem)
+        assertEquals(PageSelectionException.Problem.OUT_OF_RANGE, PdfPageSelection.problem("7", 6)?.problem)
+        assertEquals(6, PdfPageSelection.problem("7", 6)?.pageCount)
+        assertEquals(PageSelectionException.Problem.REVERSED, PdfPageSelection.problem("5-2", 6)?.problem)
+        assertNull(PdfPageSelection.problem("1", 0))
     }
 
     @Test fun pagesAreWrittenAsRanges() {

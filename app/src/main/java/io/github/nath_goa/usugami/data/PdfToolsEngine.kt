@@ -9,6 +9,7 @@ import android.os.Parcelable
 import android.provider.OpenableColumns
 import io.github.nath_goa.usugami.core.Compressor
 import io.github.nath_goa.usugami.core.FileNames
+import io.github.nath_goa.usugami.core.OutputType
 import io.github.nath_goa.usugami.core.PageFrame
 import io.github.nath_goa.usugami.core.PageNumberPosition
 import io.github.nath_goa.usugami.core.PageNumberSize
@@ -82,8 +83,8 @@ enum class PdfCompression(val dpi: Int, val quality: Float) {
     LESS(200, 0.85f), RECOMMENDED(150, 0.68f), EXTREME(100, 0.48f)
 }
 
-/** One of several PDFs to compress at once: [input] at [level], into a PDF named [fileName]. */
-data class CompressJob(val input: PdfInput, val level: PdfCompression, val fileName: String)
+/** One of several PDFs to compress at once: [input] at [level], into a PDF named [fileName], turned gray when [gray] (Black and white). */
+data class CompressJob(val input: PdfInput, val level: PdfCompression, val fileName: String, val gray: Boolean = false)
 
 /** One of several PDFs a tool makes at once with the same choices: of [input], named [fileName]. */
 data class ToolJob(val input: PdfInput, val fileName: String)
@@ -108,11 +109,15 @@ class PdfCertificateEncrypted(cause: Throwable) : IOException("Certificate-encry
  */
 class FlattenResult(val file: PdfFile, val droppedDynamicXfa: Boolean, val keptFields: Int)
 
+/** What Find text found: [matches], each the boxes of one match, and [unread], the pages (zero-based, in order) with text it couldn't read. */
+class TextSearch(val matches: List<List<RedactBox>>, val unread: List<Int>)
+
 /**
- * Split, merge, compress, rotate, delete pages, reorganize, flatten, page numbers, watermarks,
- * signatures, Edit PDF's additions and redaction. Input copies, results and PDFBox's scratch files all live in
+ * Split, merge, compress, reorganize (pages moved, turned, removed or added), flatten, page numbers,
+ * watermarks, signatures, the reader's additions (Annotate) and redaction. Input copies, results and PDFBox's scratch files all live in
  * the cache, so the system can reclaim them (and "Clear cache" removes them); callers must cope with
- * a file that has gone.
+ * a file that has gone. PDF to images or text, Page layout and Document info are extension functions
+ * in files of their own (FromPdf.kt, PdfPageLayout.kt and DocumentInfo.kt).
  */
 class PdfToolsEngine(private val context: Context) {
     private val inputDir = File(context.cacheDir, "pdf-inputs")
@@ -124,7 +129,7 @@ class PdfToolsEngine(private val context: Context) {
     }
 
     // The folder is created each time: the system may have cleared the cache since the last run.
-    private fun memory() = pdfScratch(scratchDir.apply { mkdirs() })
+    internal fun memory() = pdfScratch(scratchDir.apply { mkdirs() })
 
     /** Deletes the PDFs made before, but [keep]: a result showing again after Android restarted Usugami. */
     fun clearOutput(keep: Collection<File> = emptyList()) { outputDir.deleteAllBut(keep, context) }
@@ -137,7 +142,13 @@ class PdfToolsEngine(private val context: Context) {
 
     fun delete(input: PdfInput) {
         input.file.delete()
+        deleteViews(input)
+    }
+
+    /** Deletes [input]'s views, not the PDF itself: for a PDF that is not the engine's to delete (a result being looked at). */
+    fun deleteViews(input: PdfInput) {
         viewFile(input).delete()
+        viewFile(input, unmark = false).delete()
     }
 
     fun deleteAllExcept(keep: Collection<PdfInput>) {
@@ -154,7 +165,7 @@ class PdfToolsEngine(private val context: Context) {
         val file = File(inputDir, "$id.pdf")
         val inputInfo = PdfInput(id, file.path, displayName(uri) ?: "Document.pdf", 0, password)
         // A view made for an earlier copy with this number would show the wrong PDF.
-        viewFile(inputInfo).delete()
+        deleteViews(inputInfo)
         try {
             val input = context.contentResolver.openInputStream(uri) ?: throw IOException("Could not open PDF")
             input.use { source ->
@@ -187,7 +198,7 @@ class PdfToolsEngine(private val context: Context) {
     fun adopt(file: File, id: Long, name: String): PdfInput {
         val target = File(inputDir, "$id.pdf")
         val inputInfo = PdfInput(id, target.path, name, 0)
-        viewFile(inputInfo).delete()
+        deleteViews(inputInfo)
         try {
             moveCopy(file, target)
             if (!hasPdfHeader(target)) throw IOException("This file is not a PDF")
@@ -205,7 +216,8 @@ class PdfToolsEngine(private val context: Context) {
     /**
      * Reads [input]'s pages with [password]. A damaged page tree is mended (see [repairPageTree]) and
      * the copy saved again, without its password, so that every reader of it finds the same pages:
-     * the tools, and Android's renderer, which draws the previews and Redact PDF's pictures.
+     * the tools, and Android's renderer, which draws the previews and Redact PDF's pictures. A PDF
+     * without a usable /ID gets a random one then, as Document info gives it (see DocumentInfo.apply).
      */
     fun inspect(input: PdfInput, password: String): PdfInput {
         // Written whole before it takes the copy's place, so a run cut short leaves the copy as it was.
@@ -222,6 +234,9 @@ class PdfToolsEngine(private val context: Context) {
                 if (doc.numberOfPages == 0) throw IOException("This PDF has no pages")
                 if (changed) {
                     doc.isAllSecurityToBeRemoved = true
+                    // Saved without, PDFBox would make one from the clock, which Document info keeps.
+                    val trailer = doc.document.trailer
+                    if (!DocumentInfo.hasId(trailer)) trailer.setItem(COSName.ID, DocumentInfo.randomId())
                     doc.save(mended)
                 }
                 doc.numberOfPages to changed
@@ -314,7 +329,7 @@ class PdfToolsEngine(private val context: Context) {
                     offsets[input.id] = start
                     loadUnmarked(input.file, input.password).use { source ->
                         val own = PageLabeling.of(source)
-                        merger.appendDocument(dest, source)
+                        CjkFormFonts.append(merger, dest, source)
                         if (own != null) labels += PageLabeling.byPage((start until dest.numberOfPages).map(dest::getPage), own)
                     }
                 }
@@ -362,81 +377,101 @@ class PdfToolsEngine(private val context: Context) {
     }
 
     /**
-     * Turns pages clockwise by [rotations] (page index to degrees, a multiple of 90), on top of the
-     * turn they already have. Only the pages' /Rotate changes; their content is left as it is.
-     */
-    fun rotate(input: PdfInput, rotations: Map<Int, Int>, fileName: String, check: () -> Unit = {}): PdfFile =
-        edit(input, fileName, "Rotated", check) { doc ->
-            for ((index, degrees) in rotations) {
-                check()
-                require(index in 0 until doc.numberOfPages && degrees % 90 == 0)
-                val page = doc.getPage(index)
-                page.rotation = Math.floorMod(page.rotation + degrees, 360)
-            }
-        }
-
-    /**
-     * Saves [input] without [pages] (zero-based), which must leave at least one page. Their
-     * bookmarks, form fields and links to them go too, so nothing of them stays in the file. The
-     * pages left keep their labels (see [PageLabeling]).
-     */
-    fun deletePages(input: PdfInput, pages: Collection<Int>, fileName: String, check: () -> Unit = {}): PdfFile =
-        edit(input, fileName, "Pages_deleted", check) { doc ->
-            val doomed = pages.toSortedSet()
-            require(doomed.isNotEmpty() && doomed.size < doc.numberOfPages && doomed.all { it in 0 until doc.numberOfPages })
-            val labels = PageLabeling.of(doc)?.let { PageLabeling.byPage(doc.pages.toList(), it) }
-            val removed = doomed.map(doc::getPage)
-            for (page in removed) {
-                check()
-                doc.removePage(page)
-            }
-            PageCleanup.dropRemovedPages(doc, removed, check)
-            labels?.let { PageLabeling.restore(doc, it) }
-        }
-
-    /**
      * Saves [main] with the pages in [pages]' order: its own pages, pages of [extras] (other PDFs
-     * the user added) and blank pages, each turned as it says. Pages left out are dropped as
-     * [deletePages] drops them. [main]'s bookmarks, form, tags and document details are kept; an
-     * extra PDF's come along with its pages, as in Merge. Each page keeps its label.
+     * the user added) and blank pages, each turned as it says. Pages left out are really gone: their
+     * bookmarks, form fields and links to them go too. [main]'s bookmarks, form, tags and document
+     * details are kept; an extra PDF's come along with its pages, as in Merge. Each page keeps its label.
+     *
+     * While [pages] are [main]'s own pages in the order they have there (some turned, some left out,
+     * none moved or added) and its page tree lists each page once, the page tree is left as it is:
+     * only the turned pages' /Rotate changes, and the pages left out are taken out of it. Their
+     * content, sizes and crop boxes aren't touched.
      */
     fun reorganize(main: PdfInput, extras: List<PdfInput>, pages: List<PdfPageRef>, fileName: String, check: () -> Unit = {}): PdfFile =
         edit(main, fileName, "Reorganized", check) { doc ->
             require(pages.isNotEmpty() && pages.map { it.key }.toSet().size == pages.size)
-            val sources = HashMap<Long, List<PDPage>>()
-            sources[main.id] = doc.pages.toList()
-            // Each PDF's own page labels, read before an extra one is joined (see merge).
-            val labels = PageLabeling.of(doc)?.let { PageLabeling.byPage(doc.pages.toList(), it) }
-            val merger = PDFMergerUtility()
-            for (extra in extras) {
-                if (extra.id in sources || pages.none { it.inputId == extra.id }) continue
-                check()
-                val start = doc.numberOfPages
-                loadUnmarked(extra.file, extra.password).use { source ->
-                    val own = PageLabeling.of(source)
-                    merger.appendDocument(doc, source)
-                    sources[extra.id] = (start until doc.numberOfPages).map(doc::getPage)
-                    if (own != null) labels?.putAll(PageLabeling.byPage(sources.getValue(extra.id), own))
-                }
-            }
-            val before = doc.pages.toList()
-            val order = pages.map { ref ->
-                check()
-                val page = if (ref.isBlank) {
-                    require(ref.width > 0f && ref.height > 0f)
-                    PDPage(PDRectangle(ref.width, ref.height)).apply { resources = PDResources() }
-                } else {
-                    val source = sources.getValue(ref.inputId)
-                    require(ref.page in source.indices)
-                    source[ref.page]
-                }
-                page.rotation = Math.floorMod(page.rotation + ref.rotation, 360)
-                page
-            }
-            setPages(doc, order)
-            PageCleanup.dropRemovedPages(doc, before, check)
+            val all = doc.pages.toList()
+            if (inOwnOrder(main, pages) && eachOnce(all)) turnAndRemove(doc, all, pages, check) else rearrange(doc, main, extras, pages, check)
+        }
+
+    /** Whether [pages] are pages of [main] only, in the order they have in it. */
+    private fun inOwnOrder(main: PdfInput, pages: List<PdfPageRef>): Boolean =
+        pages.all { it.inputId == main.id } && pages.zipWithNext().all { (a, b) -> a.page < b.page }
+
+    /**
+     * Whether the page tree lists each page of [all] once. Only a damaged one lists a page twice, and
+     * PDFBox would take such a page out where the tree first lists it, not where the user chose.
+     */
+    private fun eachOnce(all: List<PDPage>): Boolean =
+        all.mapTo(Collections.newSetFromMap(IdentityHashMap<COSDictionary, Boolean>())) { it.cosObject }.size == all.size
+
+    /**
+     * The in-place path, what 1.6.5's two page tools did: the pages of [doc] ([all]) that [pages] leaves
+     * out are taken out of its page tree, their bookmarks, form fields and links to them with them,
+     * and the pages it turns get their /Rotate changed. Nothing else of a page or of the page tree
+     * changes. The pages left keep their labels (see [PageLabeling]).
+     */
+    private fun turnAndRemove(doc: PDDocument, all: List<PDPage>, pages: List<PdfPageRef>, check: () -> Unit) {
+        require(pages.all { it.page in all.indices && it.rotation % 90 == 0 })
+        val kept = pages.associateBy { it.page }
+        val removed = all.filterIndexed { index, _ -> index !in kept }
+        // Read before pages go, given back once they have (see PageLabeling).
+        val labels = if (removed.isEmpty()) null else PageLabeling.of(doc)?.let { PageLabeling.byPage(all, it) }
+        for ((index, ref) in kept) {
+            if (ref.rotation == 0) continue // a page not turned keeps its dictionary as it is
+            check()
+            all[index].rotation = Math.floorMod(all[index].rotation + ref.rotation, 360)
+        }
+        for (page in removed) {
+            check()
+            doc.removePage(page)
+        }
+        if (removed.isNotEmpty()) {
+            PageCleanup.dropRemovedPages(doc, removed, check)
             labels?.let { PageLabeling.restore(doc, it) }
         }
+    }
+
+    /**
+     * The other path, for pages moved or added: [main]'s pages, [extras]' and blank ones laid out
+     * flat in [pages]' order (see [setPages]), each turned as it says, and the pages left out
+     * dropped with their bookmarks, form fields and links to them.
+     */
+    private fun rearrange(doc: PDDocument, main: PdfInput, extras: List<PdfInput>, pages: List<PdfPageRef>, check: () -> Unit) {
+        val sources = HashMap<Long, List<PDPage>>()
+        sources[main.id] = doc.pages.toList()
+        // Each PDF's own page labels, read before an extra one is joined (see merge).
+        val labels = PageLabeling.of(doc)?.let { PageLabeling.byPage(doc.pages.toList(), it) }
+        val merger = PDFMergerUtility()
+        for (extra in extras) {
+            if (extra.id in sources || pages.none { it.inputId == extra.id }) continue
+            check()
+            val start = doc.numberOfPages
+            loadUnmarked(extra.file, extra.password).use { source ->
+                val own = PageLabeling.of(source)
+                CjkFormFonts.append(merger, doc, source)
+                sources[extra.id] = (start until doc.numberOfPages).map(doc::getPage)
+                if (own != null) labels?.putAll(PageLabeling.byPage(sources.getValue(extra.id), own))
+            }
+        }
+        val before = doc.pages.toList()
+        val order = pages.map { ref ->
+            check()
+            val page = if (ref.isBlank) {
+                require(ref.width > 0f && ref.height > 0f)
+                PDPage(PDRectangle(ref.width, ref.height)).apply { resources = PDResources() }
+            } else {
+                val source = sources.getValue(ref.inputId)
+                require(ref.page in source.indices)
+                source[ref.page]
+            }
+            page.rotation = Math.floorMod(page.rotation + ref.rotation, 360)
+            page
+        }
+        setPages(doc, order)
+        PageCleanup.dropRemovedPages(doc, before, check)
+        labels?.let { PageLabeling.restore(doc, it) }
+    }
 
     /**
      * Makes [pages] the document's pages, in order, all straight under the page tree's root. Each
@@ -666,8 +701,11 @@ class PdfToolsEngine(private val context: Context) {
         }
     }
 
-    /** Where [input]'s view (see [previewView]) is kept, beside the copy. */
-    private fun viewFile(input: PdfInput) = File(inputDir, "${input.id}-view.pdf")
+    /**
+     * Where [input]'s view (see [previewView]) is kept, beside the copy: the view without Usugami's
+     * mark, or ([unmark] false) the one with it, which the reader shows.
+     */
+    private fun viewFile(input: PdfInput, unmark: Boolean = true) = File(inputDir, "${input.id}-${if (unmark) "view" else "read"}.pdf")
 
     /**
      * The PDF the tools' previews draw, and Redact PDF searches and draws its pictures from: [input]
@@ -677,17 +715,26 @@ class PdfToolsEngine(private val context: Context) {
      * make their PDFs without the mark (see [loadUnmarked]), so the pages are shown as they come out.
      * Made once and kept beside the copy until the PDF is put away.
      */
-    fun previewView(input: PdfInput, check: () -> Unit = {}): PdfInput {
-        val file = viewFile(input)
+    fun previewView(input: PdfInput, check: () -> Unit = {}): PdfInput = previewView(input, check, unmark = true)
+
+    /**
+     * As [previewView], and with [unmark] false the view keeps Usugami's own mark: the reader shows a
+     * file as it is, where the tools' previews show pages as their PDF will come out. The two views
+     * are files of their own.
+     */
+    fun previewView(input: PdfInput, check: () -> Unit, unmark: Boolean): PdfInput {
+        val file = viewFile(input, unmark)
         if (file.isFile) return input.copy(path = file.path, password = "")
         load(input.file, input.password).use { doc ->
-            val unmarked = PageMark.unmark(doc)
+            val unmarked = unmark && PageMark.unmark(doc)
             val drawn = Redactor.drawAnnotationsIntoPages(doc, check)
             if (!drawn && !unmarked && input.password.isEmpty()) return input
             check()
             doc.isAllSecurityToBeRemoved = true
             // Written whole before it takes the view's name, so a run cut short leaves no half view.
-            val partial = File(inputDir, "${input.id}-view.tmp")
+            val partial = File(inputDir, "${input.id}-${if (unmark) "view" else "read"}.tmp")
+            // A preview of a result may be the first to write here.
+            inputDir.mkdirs()
             try {
                 doc.save(partial)
                 if (!partial.renameTo(file)) throw IOException("Couldn't keep the view")
@@ -698,18 +745,23 @@ class PdfToolsEngine(private val context: Context) {
         return input.copy(path = file.path, password = "")
     }
 
+    /** The matches of [searchText]. */
+    fun findText(input: PdfInput, query: String, view: PdfInput? = null, check: () -> Unit = {}): List<List<RedactBox>> =
+        searchText(input, query, view, check).matches
+
     /**
      * Every place [query] is found in [input]'s text, as boxes over each line of it (see [Redactor.find]),
-     * and in its comments, as a box over each comment (see [Redactor.findInComments]). [view] is
-     * its [previewView], if already made.
+     * and in its comments, as a box over each comment (see [Redactor.findInComments]), and the pages
+     * whose text couldn't all be read (see [Redactor.readable]). [view] is its [previewView], if
+     * already made.
      */
-    fun findText(input: PdfInput, query: String, view: PdfInput? = null, check: () -> Unit = {}): List<List<RedactBox>> {
+    fun searchText(input: PdfInput, query: String, view: PdfInput? = null, check: () -> Unit = {}): TextSearch {
         val view = view ?: previewView(input, check)
         val inText = load(view.file, view.password).use { doc -> Redactor.find(doc, query, check) }
         // The view has the comments drawn into the pages, without what they say: that is in the PDF itself.
-        val pages = inText.mapTo(HashSet()) { it.first().page }
+        val pages = inText.matches.mapTo(HashSet()) { it.first().page }
         val inComments = load(input.file, input.password).use { doc -> Redactor.findInComments(doc, query, pages, check) }
-        return (inText + inComments).sortedBy { it.first().page }
+        return TextSearch((inText.matches + inComments).sortedBy { it.first().page }, inText.unread)
     }
 
     /**
@@ -732,8 +784,8 @@ class PdfToolsEngine(private val context: Context) {
     }
 
     /**
-     * Draws Edit PDF's [items] (text, strokes, shapes and pictures) on [input]'s pages, exactly where
-     * the preview showed them on each page as shown. Pages without items are left as they are.
+     * Draws what Annotate added, [items] (text, strokes, shapes and pictures), on [input]'s pages,
+     * exactly where the screen showed them on each page as shown. Pages without items are left as they are.
      * Throws [WatermarkFontMissing] if no font on the phone can draw some of the text.
      */
     fun editPages(input: PdfInput, items: List<PageItem>, fileName: String, check: () -> Unit = {}): PdfFile {
@@ -757,7 +809,7 @@ class PdfToolsEngine(private val context: Context) {
      * Opens [input], lets [block] change it, and saves it as [fileName] without a password. [check]
      * is called before saving too, since saving a large PDF takes a while.
      */
-    private fun edit(input: PdfInput, fileName: String, fallbackName: String, check: () -> Unit, block: (PDDocument) -> Unit): PdfFile {
+    internal fun edit(input: PdfInput, fileName: String, fallbackName: String, check: () -> Unit, block: (PDDocument) -> Unit): PdfFile {
         clearOutput()
         outputDir.mkdirs()
         try {
@@ -769,7 +821,7 @@ class PdfToolsEngine(private val context: Context) {
     }
 
     /** As [edit], into [target] beside the other PDFs made; nothing is left at [target] if it fails. */
-    private fun editInto(input: PdfInput, target: File, check: () -> Unit, block: (PDDocument) -> Unit): PdfFile {
+    internal fun editInto(input: PdfInput, target: File, check: () -> Unit, block: (PDDocument) -> Unit): PdfFile {
         try {
             loadUnmarked(input.file, input.password).use { doc ->
                 block(doc)
@@ -787,15 +839,38 @@ class PdfToolsEngine(private val context: Context) {
     /** Where a PDF named [name] (a name already cleaned) is made, in the output folder. */
     internal fun outputFile(name: String): File = File(outputDir, "$name.pdf")
 
+    /** Where a file named [name] (a name already cleaned) of [type] is made, in the output folder. */
+    internal fun outputFile(name: String, type: OutputType): File = File(outputDir, "$name.${type.extension}")
+
+    /**
+     * Starts a result in place of the files made before, and runs [make], which makes its files in
+     * the output folder (see [outputFile]). If it fails or is cancelled, none is left behind.
+     */
+    internal fun <T> newOutput(make: () -> T): T {
+        clearOutput()
+        outputDir.mkdirs()
+        try {
+            return make()
+        } catch (t: Throwable) {
+            clearOutput()
+            throw t
+        }
+    }
+
     private fun PageFrame.toMatrix(): Matrix = matrix.let { m -> Matrix(m[0], m[1], m[2], m[3], m[4], m[5]) }
 
-    /** Re-encodes only opaque image XObjects; text, vectors, and untouched images stay as PDF objects. */
-    fun compress(input: PdfInput, level: PdfCompression, fileName: String, check: () -> Unit = {}): PdfFile {
+    /**
+     * Re-encodes only opaque image XObjects; text, vectors, and untouched images stay as PDF objects.
+     * With [gray] (Black and white) every colour is also turned into a shade of gray, text and
+     * drawings staying text and drawings ([PdfGray]); [PdfFile.gray] says what was turned gray and
+     * which pages are still partly in colour.
+     */
+    fun compress(input: PdfInput, level: PdfCompression, fileName: String, check: () -> Unit = {}, gray: Boolean = false): PdfFile {
         clearOutput()
         outputDir.mkdirs()
         val target = File(outputDir, "${FileNames.sanitize(fileName, "Compressed")}.pdf")
         try {
-            return compressTo(input, level, target, check)
+            return compressTo(input, level, target, check, gray)
         } catch (t: Throwable) {
             clearOutput()
             throw t
@@ -808,7 +883,7 @@ class PdfToolsEngine(private val context: Context) {
      */
     fun compressEach(jobs: List<CompressJob>, check: () -> Unit = {}, onNext: (Int) -> Unit = {}): List<Result<PdfFile>> {
         val names = FileNames.uniqueNames(jobs.map { it.fileName }, "Compressed")
-        return each(jobs.size, check, onNext) { i -> compressTo(jobs[i].input, jobs[i].level, outputFile(names[i]), check) }
+        return each(jobs.size, check, onNext) { i -> compressTo(jobs[i].input, jobs[i].level, outputFile(names[i]), check, jobs[i].gray) }
     }
 
     /**
@@ -851,11 +926,15 @@ class PdfToolsEngine(private val context: Context) {
      * copied as it is instead, and its [PdfFile.keptOriginal] says so: not one restricted by an owner
      * password, which every tool takes off, nor one with Usugami's own mark, which no tool keeps (see
      * [loadUnmarked]), but for a mark appended to a signed PDF: that PDF is kept, as it was signed.
+     * With [gray] (Black and white), the PDF's colours are turned gray after its pictures are
+     * compressed ([PdfGray]), and once anything was turned gray that PDF is the result, smaller or
+     * not: the user asked for gray. A PDF with no colour is kept by the rule above, as without it.
      * Nothing is left at [target] if it fails.
      */
-    internal fun compressTo(input: PdfInput, level: PdfCompression, target: File, check: () -> Unit): PdfFile {
+    internal fun compressTo(input: PdfInput, level: PdfCompression, target: File, check: () -> Unit, gray: Boolean = false): PdfFile {
         val candidate = File(outputDir, "candidate.tmp")
         try {
+            var outcome: GrayOutcome? = null
             var asItIs = input.password.isEmpty()
             // The PDF compressed, or kept: the first bytes of a signed one the mark was appended to.
             var length = input.file.length()
@@ -870,19 +949,23 @@ class PdfToolsEngine(private val context: Context) {
                     maxOf(box.width, box.height)
                 }
                 val maxDimension = minOf(4000, (maxPageSide * level.dpi / 72f).toInt().coerceAtLeast(1))
+                val grayer = if (gray) PdfGray(doc, maxDimension, level, scratchDir, check) else null
                 val seen = Collections.newSetFromMap(IdentityHashMap<COSDictionary, Boolean>())
                 val done = IdentityHashMap<COSBase, PDImageXObject?>()
                 for (page in doc.pages) {
                     check()
-                    compressResources(doc, page.resources, level, maxDimension, seen, done, check)
+                    compressResources(doc, page.resources, level, maxDimension, seen, done, check, grayer)
                 }
+                // Black and white's pass over everything the pages draw, after the pictures were compressed.
+                outcome = grayer?.convert()
                 doc.isAllSecurityToBeRemoved = true
                 doc.save(candidate)
             }
-            // A saving under 1% isn't worth a re-encoded copy: the original is kept, as it says.
-            val keep = asItIs && Compressor.savedPercent(length, candidate.length()) == null
+            // A saving under 1% isn't worth a re-encoded copy: the original is kept, as it says,
+            // unless Black and white turned something gray.
+            val keep = outcome?.changed != true && asItIs && Compressor.savedPercent(length, candidate.length()) == null
             if (keep) PageMark.cut(input.file, length, target) else candidate.copyTo(target, overwrite = true)
-            return PdfFile(target, input.pageCount, length, keptOriginal = keep)
+            return PdfFile(target, input.pageCount, length, keptOriginal = keep, gray = outcome)
         } catch (t: Throwable) {
             target.delete()
             throw t
@@ -891,6 +974,12 @@ class PdfToolsEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Pass 1 of Compress: re-encodes the opaque pictures [resources] and the forms in it list as JPEGs
+     * at [level], each where that is smaller. With Black and white ([gray]) each such picture is
+     * encoded as a one-component gray JPEG ([PdfGray.jpeg]) instead, which also replaces a JPEG in
+     * colour that doesn't get smaller; [PdfGray] turns the rest gray afterwards (pass 2).
+     */
     private fun compressResources(
         doc: PDDocument,
         resources: PDResources?,
@@ -899,13 +988,14 @@ class PdfToolsEngine(private val context: Context) {
         seen: MutableSet<COSDictionary>,
         done: MutableMap<COSBase, PDImageXObject?>,
         check: () -> Unit,
+        gray: PdfGray? = null,
     ) {
         if (resources == null || !seen.add(resources.cosObject)) return
         for (name in resources.xObjectNames) {
             check()
             val obj = try { resources.getXObject(name) } catch (_: IOException) { continue }
             when (obj) {
-                is PDFormXObject -> compressResources(doc, obj.resources, level, maxDimension, seen, done, check)
+                is PDFormXObject -> compressResources(doc, obj.resources, level, maxDimension, seen, done, check, gray)
                 is PDImageXObject -> {
                     // Pages often share one image stream (a logo or background). Encode it once and
                     // reuse the result; decoding it again would hand back PDFBox's cached bitmap,
@@ -955,10 +1045,30 @@ class PdfToolsEngine(private val context: Context) {
                             // decoder still marks its bitmaps as having alpha (gray ones use the gray
                             // value as alpha), which would make JPEGFactory add a bogus soft mask.
                             bitmap.setHasAlpha(false)
-                            val replacement = JPEGFactory.createFromImage(doc, bitmap, level.quality)
-                            if ((replacement.cosObject as COSStream).length < originalLength) {
-                                done[stream] = replacement
-                                resources.put(name, replacement)
+                            if (gray == null) {
+                                val replacement = JPEGFactory.createFromImage(doc, bitmap, level.quality)
+                                if ((replacement.cosObject as COSStream).length < originalLength) {
+                                    done[stream] = replacement
+                                    resources.put(name, replacement)
+                                }
+                            } else {
+                                // Black and white: a one-component gray JPEG, which pass 2 then leaves as it is.
+                                // A JPEG in colour is replaced also when that isn't smaller: it must turn gray
+                                // anyway, and it is already at the level's size and quality. A lossless picture
+                                // in colour whose gray JPEG isn't smaller is left for pass 2, which keeps it lossless.
+                                val inColor = !isGrayPicture(obj)
+                                val replacement = gray.jpeg(bitmap, level.quality)
+                                if ((replacement.cosObject as COSStream).length < originalLength || (inColor && obj.suffix == "jpg")) {
+                                    // Beyond its pixels the picture's dictionary stays: its layer (/OC, so a picture
+                                    // hidden by default stays hidden), /Interpolate, /Intent, its place in the tagged
+                                    // structure and its metadata.
+                                    for (key in listOf(COSName.OC, COSName.INTERPOLATE, COSName.INTENT, COSName.STRUCT_PARENT, COSName.METADATA)) {
+                                        obj.cosObject.getItem(key)?.let { replacement.cosObject.setItem(key, it) }
+                                    }
+                                    done[stream] = replacement
+                                    resources.put(name, replacement)
+                                    if (inColor) gray.turnedGray(replacement.cosObject)
+                                }
                             }
                         } finally {
                             bitmap.recycle()
@@ -993,13 +1103,20 @@ class PdfToolsEngine(private val context: Context) {
         }
     }
 
+    /** A picture [canDecodeFaithfully] lets through that is stored gray: DeviceGray, or ICCBased of one component. */
+    private fun isGrayPicture(obj: PDImageXObject): Boolean = when (val colorSpace = obj.cosObject.getDictionaryObject(COSName.COLORSPACE)) {
+        COSName.DEVICEGRAY -> true
+        is COSArray -> colorSpace.size() == 2 && colorSpace.getObject(0) == COSName.ICCBASED && (colorSpace.getObject(1) as? COSStream)?.getInt(COSName.N) == 1
+        else -> false
+    }
+
     /**
      * Opens [file] with PDFBox. Certificate encryption (Adobe.PubSec) needs BouncyCastle, which isn't
      * bundled: PDFBox then throws an IOException, or would hit a missing class, so both become
      * [PdfCertificateEncrypted]. A PDF nested deeper than PDFBox's reading goes (it reads arrays in
      * arrays by calling itself, without a limit) fails as a damaged one does.
      */
-    private fun load(file: File, password: String): PDDocument = try {
+    internal fun load(file: File, password: String): PDDocument = try {
         PDDocument.load(file, password, memory())
     } catch (e: InvalidPasswordException) {
         throw e
@@ -1020,7 +1137,7 @@ class PdfToolsEngine(private val context: Context) {
      * setting asks for once it is made, in the right place, or none. Redact PDF's pictures are drawn
      * from the [previewView], which hasn't it either.
      */
-    private fun loadUnmarked(file: File, password: String): PDDocument {
+    internal fun loadUnmarked(file: File, password: String): PDDocument {
         val doc = load(file, password)
         try {
             PageMark.unmark(doc)

@@ -7,4 +7,6 @@
          mention it (app/src/main has the other editions' texts). -->
     <string name="tool_images_detail">Camera scans and images to one PDF, or one PDF each</string>
     <string name="search_keywords_images">photo, picture, JPEG, JPG, PNG, HEIC, WebP, scan, scanner, camera, gallery, document, black and white</string>
+    <!-- After a long press on a page of the reader that has no text in it, only a picture of a page (a scan, a photo). Usugami Lite has no text recognition to read it. -->
+    <string name="reader_no_text">This page has no text to select. It may be a scan, which Usugami Lite can\'t read.</string>
 </resources>

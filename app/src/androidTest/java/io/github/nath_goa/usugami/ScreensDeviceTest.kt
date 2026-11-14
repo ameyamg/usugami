@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.app.Instrumentation
 import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ActivityNotFoundException
 import android.content.ContentUris
 import android.content.ContentValues
@@ -26,6 +27,7 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction
 import androidx.core.content.FileProvider
@@ -35,10 +37,14 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
+import com.tom_roush.pdfbox.cos.COSDictionary
+import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.common.PDStream
+import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
@@ -49,16 +55,22 @@ import io.github.nath_goa.usugami.core.CropQuad
 import io.github.nath_goa.usugami.core.InkItem
 import io.github.nath_goa.usugami.core.LookAdjustments
 import io.github.nath_goa.usugami.core.PageLook
+import io.github.nath_goa.usugami.core.ReadFrom
 import io.github.nath_goa.usugami.core.Redaction
 import io.github.nath_goa.usugami.core.ShapeItem
 import io.github.nath_goa.usugami.core.ShapeKind
+import io.github.nath_goa.usugami.core.SharedKind
+import io.github.nath_goa.usugami.core.ShortcutTarget
 import io.github.nath_goa.usugami.core.SignatureLayout
 import io.github.nath_goa.usugami.core.TextItem
+import io.github.nath_goa.usugami.core.TextSelection
 import io.github.nath_goa.usugami.data.AppLanguages
+import io.github.nath_goa.usugami.data.AppShortcuts
 import io.github.nath_goa.usugami.data.Appearance
 import io.github.nath_goa.usugami.data.Appearances
 import io.github.nath_goa.usugami.data.PdfCompression
 import io.github.nath_goa.usugami.data.PdfFile
+import io.github.nath_goa.usugami.data.PdfPrinting
 import io.github.nath_goa.usugami.data.RecentFiles
 import io.github.nath_goa.usugami.data.SignatureInk
 import io.github.nath_goa.usugami.data.office.OfficeKind
@@ -83,6 +95,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assume
 import org.junit.Before
@@ -367,12 +380,42 @@ class ScreensDeviceTest {
             val scan = find("Scan document") { it.says(app.getString(R.string.scan_title)) }
             assertNotNull("A screen reader can jump to Scan document", ancestor(scan) { it.isHeading })
         }
-        val headings = listOf(R.string.home_section_create, R.string.home_section_organize, R.string.home_section_edit, R.string.home_section_optimize)
+        val headings = listOf(
+            R.string.home_section_view,
+            R.string.home_section_create,
+            R.string.home_section_organize,
+            R.string.home_section_edit,
+            R.string.home_section_optimize,
+            R.string.home_section_from_pdf,
+        )
         val sections = listOf(
-            listOf(R.string.tool_images, R.string.tool_word, R.string.tool_powerpoint, R.string.tool_excel, R.string.tool_epub),
-            listOf(R.string.tool_merge, R.string.tool_split, R.string.tool_reorganize, R.string.tool_delete_pages, R.string.tool_rotate),
-            listOf(R.string.tool_edit, R.string.tool_sign, R.string.tool_page_numbers, R.string.tool_watermark),
-            listOf(R.string.tool_compress, R.string.tool_redact, R.string.tool_flatten),
+            listOf(
+                R.string.tool_reader,
+            ),
+            listOf(
+                R.string.tool_images,
+                R.string.tool_documents,
+            ),
+            listOf(
+                R.string.tool_merge,
+                R.string.tool_split,
+                R.string.tool_reorganize,
+                R.string.tool_page_layout,
+            ),
+            listOf(
+                R.string.tool_sign,
+                R.string.tool_page_numbers,
+                R.string.tool_watermark,
+            ),
+            listOf(
+                R.string.tool_compress,
+                R.string.tool_redact,
+                R.string.tool_flatten,
+                R.string.tool_document_info,
+            ),
+            listOf(
+                R.string.tool_pdf_to_images_or_text,
+            ),
         )
         val expected = headings.zip(sections).flatMap { (heading, tools) -> listOf(heading) + tools }.map(app::getString)
         val headingNames = headings.map(app::getString)
@@ -411,9 +454,21 @@ class ScreensDeviceTest {
 
     /** Every tool's name, as its card on Home shows it. */
     private val toolNames = listOf(
-        R.string.tool_images, R.string.tool_word, R.string.tool_powerpoint, R.string.tool_excel, R.string.tool_epub, R.string.tool_merge, R.string.tool_split,
-        R.string.tool_reorganize, R.string.tool_delete_pages, R.string.tool_rotate, R.string.tool_edit, R.string.tool_sign,
-        R.string.tool_page_numbers, R.string.tool_watermark, R.string.tool_compress, R.string.tool_redact, R.string.tool_flatten,
+        R.string.tool_reader,
+        R.string.tool_images,
+        R.string.tool_documents,
+        R.string.tool_merge,
+        R.string.tool_split,
+        R.string.tool_reorganize,
+        R.string.tool_page_layout,
+        R.string.tool_sign,
+        R.string.tool_page_numbers,
+        R.string.tool_watermark,
+        R.string.tool_compress,
+        R.string.tool_redact,
+        R.string.tool_flatten,
+        R.string.tool_document_info,
+        R.string.tool_pdf_to_images_or_text,
     )
 
     /** The tools whose cards are on screen, top to bottom, named in [resources]' language. */
@@ -477,13 +532,27 @@ class ScreensDeviceTest {
         // (here typed where the keyword "reduce size" has none).
         type(searchField(), "SIZE réduce")
         waitForTools(english.getString(R.string.tool_compress), resources = english)
-        // Excel to PDF, by a word for what it takes.
+        // Documents to PDF, by a word for what Excel to PDF takes.
         type(searchField(), "spreadsheet")
-        waitForTools(english.getString(R.string.tool_excel), resources = english)
-        // Tools with the word in their name come first.
+        waitForTools(english.getString(R.string.tool_documents), resources = english)
+        // Tools with the word in their name come first: Add page numbers before Merge PDF, which is
+        // found by its description, whichever other tools have the word in their names.
         type(searchField(), "page")
+        val numbers = english.getString(R.string.tool_page_numbers)
+        val merge = english.getString(R.string.tool_merge)
         waitUntil("tools named with \"page\" first") {
-            shownTools(english).take(2) == listOf(english.getString(R.string.tool_delete_pages), english.getString(R.string.tool_page_numbers))
+            shownTools(english).let { it.indexOf(numbers) in 0 until it.indexOf(merge) }
+        }
+        // Words for turning and removing pages find Reorganize PDF, and only it.
+        for (word in listOf("rotate", "delete")) {
+            type(searchField(), word)
+            waitForTools(english.getString(R.string.tool_reorganize), resources = english)
+        }
+        // Read and annotate, by what found it and what found Edit PDF, which is its Annotate.
+        val reader = english.getString(R.string.tool_reader)
+        for (word in listOf("edit", "annotate", "draw", "highlight", "text", "open", "view", "read")) {
+            type(searchField(), word)
+            waitUntil("\"$word\" to find Read and annotate") { reader in shownTools(english) }
         }
 
         type(searchField(), "zebra")
@@ -535,31 +604,103 @@ class ScreensDeviceTest {
         // "réduire" and "taille" are Compress PDF's.
         type(searchField(), "REDUIRE taille")
         waitForTools(french.getString(R.string.tool_compress), resources = french)
+        // "supprimer" (delete) is one of Reorganize PDF's French words.
+        type(searchField(), "supprimer")
+        waitForTools(french.getString(R.string.tool_reorganize), resources = french)
+        // Edit PDF's French words find Read and annotate, whose Annotate it is now.
+        for (word in listOf("annoter", "modifier")) {
+            type(searchField(), word)
+            waitUntil("\"$word\" to find Read and annotate") { french.getString(R.string.tool_reader) in shownTools(french) }
+        }
         type(searchField(), "zèbre")
         find("the empty state in French") { it.says(french.getString(R.string.home_search_none, "zèbre")) }
     }
 
-    @Test fun rotateTurnsPagesWithButtons() {
+    /**
+     * Reorganize PDF's page [number] in the grid, a check box named after it (and how it is turned,
+     * once it is).
+     */
+    private fun pageBox(number: Int): AccessibilityNodeInfo {
+        val page = app.getString(R.string.pdf_page_number, number)
+        val named = find("page $number's check box") {
+            it.refresh() && it.contentDescription?.toString().let { said -> said == page || said?.startsWith("$page, ") == true } &&
+                ancestor(it) { node -> node.isCheckable } != null
+        }
+        return ancestor(named) { it.isCheckable }!!
+    }
+
+    /** What Reorganize PDF's Selected pages field holds, once it is [text]. */
+    private fun pagesFieldReads(text: String) = find("the field reading \"$text\"") {
+        it.refresh() && it.isEditable && it.text?.toString().orEmpty().let { now -> now == text || (text.isEmpty() && now == app.getString(R.string.reorganize_pages_field)) }
+    }
+
+    /**
+     * Reorganize PDF's pages are selected by tapping them, by Select all and by typing their numbers,
+     * and the field, the bar and the check boxes stay in step; the bar turns every page selected at
+     * once, refuses to remove them all, and removes one; what is typed but can't be read is
+     * explained once a page is tapped, and selects nothing.
+     */
+    @Test fun reorganizeSelectsPagesByTappingAndTypingThenTurnsAndRemovesThem() {
         val activity = launch()
-        val pdfVm = openToolWithAlpha(R.string.tool_rotate, activity)
-        // Nothing to save until a page is turned.
-        assertFalse(clickable(button(R.string.pdf_rotate_action)).isEnabled)
+        val pdfVm = openToolWithAlpha(R.string.tool_reorganize, activity)
+        assertFalse("Nothing to save until the pages change", clickable(button(R.string.pdf_reorganize_action)).isEnabled)
+        find("the bar, with nothing selected") { it.says(app.getString(R.string.reorganize_tap_pages)) }
 
-        click(find("page 2's right button") { it.says(app.getString(R.string.rotate_page_right, 2)) })
-        waitUntil("page 2 to turn") { onMain { pdfVm.pages.value.map { it.rotation } } == listOf(0, 90, 0) }
-        find("the page saying how it turned") { it.says(app.getString(R.string.rotated_right)) }
-        click(find("the all-pages left button") { it.says(app.getString(R.string.rotate_all_left)) })
-        waitUntil("every page to turn") { onMain { pdfVm.pages.value.map { it.rotation } } == listOf(270, 0, 270) }
+        // A tap selects a page: the field, the bar and the check box say so.
+        val page2 = app.getString(R.string.pdf_page_number, 2)
+        assertFalse(pageBox(2).chosen)
+        click(pageBox(2))
+        pagesFieldReads("2")
+        find("the bar, for page 2") { it.refresh() && it.text?.toString() == page2 && !it.isCheckable }
+        waitUntil("page 2 to show as selected") { pageBox(2).chosen }
 
-        click(actionButton(R.string.pdf_rotate_action))
-        val rotated = resultFile(pdfVm)
-        assertEquals(listOf(270, 0, 270), PDDocument.load(rotated).use { doc -> doc.pages.map { it.rotation } })
+        // Select all selects every page, and becomes Select none.
+        click(button(R.string.reorganize_select_all))
+        pagesFieldReads("1-3")
+        find("the count") { it.refresh() && it.says(app.getString(R.string.reorganize_selected_count, 3, 3)) }
+        find("Select none") { it.refresh() && it.says(app.getString(R.string.reorganize_select_none)) }
+
+        // The bar turns every page selected at once.
+        click(find("the turn button for the pages selected") { it.says(app.getString(R.string.rotate_selected_left)) })
+        waitUntil("every page to turn") { onMain { pdfVm.pages.value.map { it.rotation } } == listOf(270, 270, 270) }
+
+        // But it can't remove them all: a PDF keeps at least one page.
+        click(find("the remove button") { it.says(app.resources.getQuantityString(R.plurals.remove_selected_pages, 3, 3)) })
+        find("the warning") { it.refresh() && it.says(app.getString(R.string.pdf_need_page)) }
+        assertEquals(3, onMain { pdfVm.pages.value.size })
+
+        // Pages that don't exist select nothing, and a page tapped then says why.
+        type(pagesFieldReads("1-3"), "9")
+        waitUntil("nothing to be selected") { onMain { pdfVm.chosenPages.value }.isEmpty() }
+        click(pageBox(1))
+        find("the reason") { it.refresh() && it.says(app.getString(R.string.pdf_pages_range, 3)) }
+        pagesFieldReads("9")
+        assertTrue("The tap selected nothing", onMain { pdfVm.chosenPages.value }.isEmpty())
+
+        // A page typed is selected, and removed with the bar.
+        type(pagesFieldReads("9"), "2")
+        click(find("the remove button for page 2") { it.refresh() && it.says(app.getString(R.string.remove_page, 2)) })
+        waitUntil("page 2 to go") { onMain { pdfVm.pages.value.map { it.page } } == listOf(0, 2) }
+        pagesFieldReads("")
+        assertTrue("Nothing is selected", onMain { pdfVm.chosenPages.value }.isEmpty())
+
+        click(actionButton(R.string.pdf_reorganize_action))
+        val result = resultFile(pdfVm)
+        assertEquals("alpha_reorganized.pdf", result.name)
+        PDDocument.load(result).use { doc ->
+            assertEquals(listOf(270, 270), doc.pages.map { it.rotation })
+            // Read from turned pages, the words may come out broken up: only the letters count.
+            val text = PDFTextStripper().getText(doc).filterNot(Char::isWhitespace)
+            assertTrue(text, text.contains("ALPHAONE") && text.contains("ALPHATHREE"))
+            assertFalse(text.contains("ALPHATWO"))
+        }
     }
 
     /** Back from a tool with changes asks first: Keep stays with them, Discard leaves. */
     @Test fun leavingAToolWithChangesAsksFirst() {
         val activity = launch()
-        val pdfVm = openToolWithAlpha(R.string.tool_rotate, activity)
+        val pdfVm = openToolWithAlpha(R.string.tool_reorganize, activity)
+        click(pageBox(2))
         click(find("page 2's right button") { it.says(app.getString(R.string.rotate_page_right, 2)) })
         waitUntil("page 2 to turn") { onMain { pdfVm.pages.value.map { it.rotation } } == listOf(0, 90, 0) }
 
@@ -717,46 +858,6 @@ class ScreensDeviceTest {
         checkSigned()
     }
 
-    /** The text field of a tool, the first on its screen (the file name comes last). */
-    private fun firstField() = find("the text field") { it.isEditable }
-
-    @Test fun deletePagesMarksPagesAndSaysWhatIsWrong() {
-        val activity = launch()
-        val pdfVm = openToolWithAlpha(R.string.tool_delete_pages, activity)
-        assertFalse("Nothing to delete yet", clickable(button(R.string.pdf_delete_pages_action)).isEnabled)
-        find("the count") { it.says(app.getString(R.string.delete_pages_count, 0, 3)) }
-
-        // Tapping a page marks it: the field and the count follow.
-        // Each page is a check box named after it.
-        val page2 = app.getString(R.string.pdf_page_number, 2)
-        assertFalse(radio(page2).chosen)
-        click(radio(page2))
-        waitUntil("page 2 to be marked") { nodes().any { it.isEditable && it.text?.toString() == "2" } }
-        find("the new count") { it.says(app.getString(R.string.delete_pages_count, 1, 3)) }
-        waitUntil("page 2 to show as marked") { radio(page2).chosen }
-
-        // Every page can't go: the screen says so, and so does trying.
-        val keepOne = app.getString(R.string.pdf_need_page)
-        type(firstField(), "1-3")
-        find("the warning") { it.says(keepOne) }
-        click(actionButton(R.string.pdf_delete_pages_action))
-        waitUntil("the message too") { nodes().count { it.says(keepOne) } >= 2 }
-        type(firstField(), "9")
-        click(actionButton(R.string.pdf_delete_pages_action))
-        find("the message") { it.says(app.getString(R.string.pdf_pages_range, 3)) }
-
-        type(firstField(), "2")
-        click(actionButton(R.string.pdf_delete_pages_action))
-        val result = resultFile(pdfVm)
-        assertEquals("alpha_pages_deleted.pdf", result.name)
-        val text = PDDocument.load(result).use { doc ->
-            assertEquals(2, doc.numberOfPages)
-            PDFTextStripper().getText(doc)
-        }
-        assertTrue(text.contains("ALPHA ONE") && text.contains("ALPHA THREE"))
-        assertFalse(text.contains("ALPHA TWO"))
-    }
-
     @Test fun reorganizeMovesTurnsAddsAndRemovesPagesWithButtons() {
         val first = launch()
         val firstVm = openToolWithAlpha(R.string.tool_reorganize, first)
@@ -764,21 +865,29 @@ class ScreensDeviceTest {
         find("the page count") { it.says(app.resources.getQuantityString(R.plurals.page_count, 3, 3)) }
         val (a, b, c) = onMain { firstVm.pages.value }
 
-        // Page 3 is chosen with a tap, then moved and turned with the buttons, which name it.
+        // Page 3 is selected with a tap, then moved and turned with the buttons, which name it.
         click(findBelow("page 3") { it.says(app.getString(R.string.pdf_page_number, 3)) && ancestor(it) { node -> node.isClickable } != null })
         click(find("the move button") { it.says(app.getString(R.string.move_page_earlier, 3)) })
         waitUntil("page 3 to come second") { onMain { firstVm.pages.value } == listOf(a, c, b) }
-        click(find("the turn button, for its new place") { it.says(app.getString(R.string.rotate_page_right, 2)) })
+        // The bar's buttons are named anew in place: read afresh (see relabelledButton).
+        click(find("the turn button, for its new place") { it.refresh() && it.says(app.getString(R.string.rotate_page_right, 2)) })
         waitUntil("page 3 to turn") { onMain { firstVm.pages.value.map { it.rotation } } == listOf(0, 90, 0) }
         assertTrue("Now there is something to save", clickable(actionButton(R.string.pdf_reorganize_action)).isEnabled)
 
-        // A blank page goes in after the chosen page; Undo takes it out again.
+        // A blank page goes in after the selected page; Undo takes it out again.
         click(findBelow("Add pages") { it.says(app.getString(R.string.reorganize_add)) })
         click(find("Blank page") { it.says(app.getString(R.string.reorganize_add_blank)) })
         waitUntil("a blank page third") { onMain { firstVm.pages.value.getOrNull(2)?.isBlank == true } }
         findBelow("the blank page, named for a screen reader") { it.says(app.getString(R.string.reorganize_page_blank, 3)) }
-        find("the new page count") { it.says(app.resources.getQuantityString(R.plurals.page_count, 4, 4)) }
-        click(find("Undo") { it.says(app.getString(R.string.undo)) })
+        // Above: looking for the blank page before the screen showed it scrolls the screen down, and
+        // that scroll can still be going on. The count's row, with Undo, is read afresh, and looked
+        // for above again until Undo is pressed, once.
+        val count = app.resources.getQuantityString(R.plurals.page_count, 4, 4)
+        findAbove("the new page count") { it.says(count) && it.refresh() && it.says(count) }
+        val undo = app.getString(R.string.undo)
+        waitUntil("Undo to be pressed") {
+            clickable(findAbove("Undo") { it.says(undo) && it.refresh() && it.says(undo) }).performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
         waitUntil("the blank page to go") { onMain { firstVm.pages.value.none { it.isBlank } } }
 
         // A screen reader removes page 1 with the action its card offers.
@@ -787,10 +896,10 @@ class ScreensDeviceTest {
         assertTrue(card.performAction(card.action(remove)!!.id))
         waitUntil("page 1 to go") { onMain { firstVm.pages.value.map { it.page } } == listOf(2, 1) }
 
-        // The pages and the chosen one survive the activity being recreated, as on rotation.
+        // The pages and the selected one survive the activity being recreated, as on rotation.
         onMain { first.recreate() }
         val activity = recreatedFrom(first)
-        find("the chosen page's buttons, still") { it.says(app.getString(R.string.rotate_page_right, 1)) }
+        find("the selected page's buttons, still") { it.says(app.getString(R.string.rotate_page_right, 1)) }
         val pdfVm = onMain { ViewModelProvider(activity)[PdfToolsViewModel::class.java] }
         click(actionButton(R.string.pdf_reorganize_action))
         val result = resultFile(pdfVm)
@@ -800,6 +909,97 @@ class ScreensDeviceTest {
             val text = PDFTextStripper().getText(doc).filterNot(Char::isWhitespace)
             assertTrue(text, text.indexOf("ALPHATHREE") in 0 until text.indexOf("ALPHATWO"))
             assertFalse(text.contains("ALPHAONE"))
+        }
+    }
+
+    /**
+     * Like [findBelow], reading each node afresh: after the options changed the screen in place,
+     * the tree as read here may still say what it said before, the screen's scrolling among it
+     * (see relabelledButton).
+     */
+    private fun freshBelow(what: String, match: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo {
+        val down = AccessibilityAction.ACTION_SCROLL_DOWN
+        repeat(10) {
+            nodes().firstOrNull { it.refresh() && match(it) }?.let { return it }
+            val scroller = nodes().firstOrNull { it.refresh() && down in it.actionList } ?: return find(what) { it.refresh() && match(it) }
+            scroller.performAction(down.id)
+            Thread.sleep(500)
+        }
+        return find(what) { it.refresh() && match(it) }
+    }
+
+    /**
+     * Page layout's Crop: its button is off until the box crops something; five presses of a step
+     * button crop 5% off the left of the page; Some pages starts with the page shown; the box, the
+     * choice and the pages typed survive the activity being recreated, as on rotation; and only the
+     * page typed gets the narrower crop box.
+     */
+    @Test fun pageLayoutCropsWithButtonsAndKeepsItsChoicesThroughRecreation() {
+        val first = launch()
+        openToolWithAlpha(R.string.tool_page_layout, first)
+        val cropPdf = app.getString(R.string.pdf_layout_crop_action)
+        // The options give the button its words in place, which the tree as read here may not have caught up with.
+        find("the \"$cropPdf\" button, off") {
+            it.refresh() && it.says(cropPdf) && ancestor(it) { node -> node.isClickable }?.isEnabled == false
+        }
+        // Each press steps on from the last, even before the screen has caught up.
+        val more = app.getString(R.string.layout_crop_more_left)
+        repeat(5) { click(freshBelow("the step button") { it.says(more) }) }
+        val some = app.getString(R.string.layout_pages_some)
+        click(freshBelow("Some pages") { it.says(some) })
+        waitUntil("Some pages to be chosen") { radio(some).chosen }
+        find("the pages field, with the page shown") { it.refresh() && it.isEditable && it.text?.toString() == "1" }
+
+        onMain { first.recreate() }
+        val activity = recreatedFrom(first)
+        val pdfVm = onMain { ViewModelProvider(activity)[PdfToolsViewModel::class.java] }
+        freshBelow("Some pages, still") { it.says(some) }
+        assertTrue("Some pages, still chosen", radio(some).chosen)
+        find("the pages field, still") { it.refresh() && it.isEditable && it.text?.toString() == "1" }
+        click(relabelledButton(R.string.pdf_layout_crop_action))
+
+        val result = resultFile(pdfVm)
+        assertEquals("alpha_layout.pdf", result.name)
+        PDDocument.load(result).use { doc ->
+            val cropped = doc.getPage(0).cropBox
+            // 5% of an A4 page's 595 points, after five steps of 1%.
+            assertEquals(29.75f, cropped.lowerLeftX, 0.5f)
+            assertEquals(595f, cropped.upperRightX, 0.01f)
+            assertEquals(0f, cropped.lowerLeftY, 0.01f)
+            assertEquals(842f, cropped.upperRightY, 0.01f)
+            for (index in 1..2) {
+                val page = doc.getPage(index)
+                assertNull("Page ${index + 1} isn't cropped", page.cosObject.getDictionaryObject(COSName.CROP_BOX))
+                assertEquals(595f, page.cropBox.width, 0.01f)
+            }
+            assertEquals(listOf(0, 0, 0), doc.pages.map { it.rotation })
+        }
+    }
+
+    /**
+     * Page layout's Pages per sheet: with 4 to a sheet the preview of the first sheet holds alpha.pdf's
+     * three pages and says there will be one sheet, and the PDF saved is that one sheet, an A4
+     * page upright, with the three pages' text still text.
+     */
+    @Test fun pagesPerSheetShowsItsFirstSheetAndSaves() {
+        val activity = launch()
+        val pdfVm = openToolWithAlpha(R.string.tool_page_layout, activity)
+        click(radio(app.getString(R.string.layout_mode_sheets)))
+        click(freshBelow("4 pages per sheet") { it.says(app.resources.getQuantityString(R.plurals.layout_sheets_count, 4, 4)) })
+        val preview = app.resources.getQuantityString(R.plurals.layout_sheets_preview_description, 3, 3)
+        freshBelow("the first sheet, with the three pages") { it.says(preview) }
+        val oneSheet = app.resources.getQuantityString(R.plurals.layout_sheets_made, 1, 1)
+        freshBelow("the number of sheets") { it.says(oneSheet) }
+        click(relabelledButton(R.string.pdf_page_layout_action))
+
+        val result = resultFile(pdfVm)
+        assertEquals("alpha_layout.pdf", result.name)
+        PDDocument.load(result).use { doc ->
+            assertEquals(1, doc.numberOfPages)
+            val sheet = doc.getPage(0).mediaBox
+            assertTrue("An A4 sheet, upright: ${sheet.width} x ${sheet.height}", sheet.width in 594f..596f && sheet.height in 841f..843f)
+            val text = PDFTextStripper().getText(doc)
+            assertTrue(text, listOf("ALPHA ONE", "ALPHA TWO", "ALPHA THREE").all { it in text })
         }
     }
 
@@ -823,7 +1023,7 @@ class ScreensDeviceTest {
         return all.count(match)
     }
 
-    /** A tool button of Edit PDF, by its name, once it can be pressed; the screen scrolls up to it. */
+    /** A tool button of Annotate, by its name, once it can be pressed; the screen scrolls up to it. */
     private fun editTool(label: Int) = findAbove("the \"${app.getString(label)}\" tool") {
         it.says(app.getString(label)) && ancestor(it) { node -> node.isClickable }?.isEnabled == true
     }
@@ -835,11 +1035,26 @@ class ScreensDeviceTest {
         waitUntil("the menu to close") { nodes().any { it.says(app.getString(R.string.pdf_edit_action)) } }
     }
 
-    @Test fun editPdfAddsWithButtonsUndoesAndKeepsItThroughRecreation() {
+    /** alpha.pdf (three pages) opened in the reader, as a file picked with Read and annotate is, and its first page showing. */
+    private fun alphaInTheReader(activity: MainActivity): PdfToolsViewModel {
+        val mainVm = onMain { ViewModelProvider(activity)[MainViewModel::class.java] }
+        onMain { mainVm.open(pdf("alpha.pdf"), null, ReadFrom.HOME) }
+        find("the page showing, of three") { it.says(app.getString(R.string.reader_page_of, 1, 3)) }
+        return onMain { ViewModelProvider(activity)[PdfToolsViewModel::class.java] }
+    }
+
+    @Test fun annotateAddsWithButtonsUndoesAndKeepsItThroughRecreation() {
         val first = launch()
-        val firstVm = openToolWithAlpha(R.string.tool_edit, first)
-        assertFalse("Nothing to save yet", clickable(button(R.string.pdf_edit_action)).isEnabled)
+        val firstVm = alphaInTheReader(first)
+        // With nothing added, More offers Share (the file as it was opened, which the pages show).
+        click(find("More") { it.says(app.getString(R.string.reader_more)) })
+        find("Share in More") { it.says(app.getString(R.string.share)) }
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntil("the menu to close") { nodes().none { it.says(app.getString(R.string.share)) } }
+        click(find("Annotate") { it.says(app.getString(R.string.reader_annotate)) })
         find("what to do first") { it.says(app.getString(R.string.edit_hint_start)) }
+        find("Annotate's title") { it.says(app.getString(R.string.reader_annotate)) }
+        assertTrue("No Save PDF before anything is added", nodes().none { it.says(app.getString(R.string.pdf_edit_action)) })
         fun items() = onMain { firstVm.editItems.value }
 
         // Text is typed in a dialog, then put in the middle of the page and chosen; a screen reader hears so.
@@ -891,7 +1106,7 @@ class ScreensDeviceTest {
 
         click(actionButton(R.string.pdf_edit_action))
         val result = resultFile(pdfVm)
-        assertEquals("alpha_edited.pdf", result.name)
+        assertEquals("alpha_annotated.pdf", result.name)
         PDDocument.load(result).use { doc ->
             val firstPage = PDFTextStripper().apply {
                 startPage = 1
@@ -914,11 +1129,65 @@ class ScreensDeviceTest {
         assertEquals(0, count(third, ::blue))
         original.delete()
 
-        // Back from the result, everything is still there to change.
+        // Back from the result, Annotate is as it was left, page 2 showing, everything still there to change.
         click(find("the back button") { it.says(app.getString(R.string.back_to_editing)) })
         waitUntil("the result to slide away") { nodes().none { it.says(app.getString(R.string.result_heading_one)) } }
+        findBelow("page 2, as it was left") { it.says(app.getString(R.string.edit_preview_description, 2)) }
         assertEquals(4, onMain { pdfVm.editItems.value.size })
         assertTrue(clickable(actionButton(R.string.pdf_edit_action)).isEnabled)
+
+        // Back to reading: page 2 of the pages, with what was added, and Save PDF still there.
+        click(find("Back to reading") { it.says(app.getString(R.string.reader_back_to_reading)) })
+        find("page 2 showing") { it.says(app.getString(R.string.reader_page_of, 2, 3)) }
+        assertEquals(4, onMain { pdfVm.editItems.value.size })
+        assertTrue(clickable(actionButton(R.string.pdf_edit_action)).isEnabled)
+        assertTrue("Annotate is still offered", nodes().any { it.says(app.getString(R.string.reader_annotate)) })
+        // The file as it was opened hasn't the additions the pages show: More doesn't offer to share,
+        // print or hand it over meanwhile. Save PDF's result does, with them.
+        click(find("More") { it.says(app.getString(R.string.reader_more)) })
+        find("Tools in More") { it.says(app.getString(R.string.reader_tools)) }
+        val offered = texts()
+        for (hidden in listOf(R.string.share, R.string.print, R.string.reader_open_elsewhere)) {
+            assertFalse("No ${app.getString(hidden)} while additions aren't saved", offered.contains(app.getString(hidden)))
+        }
+    }
+
+    @Test fun textIsSelectedAndCopiedInTheReader() {
+        val activity = launch()
+        val pdfVm = alphaInTheReader(activity)
+        val session = onMain { pdfVm.reader.session.value!! }
+        // The first word of the first page, as the reader reads it, and where it is on the page.
+        val glyphs = checkNotNull(runBlocking(Dispatchers.Main) { session.glyphs(0) }) { "The first page's text can't be read" }
+        val first = glyphs.glyphs.indexOfFirst { it.wordStart && it.text.first().isLetter() }
+        val box = glyphs.glyphs[first].box
+        val word = checkNotNull(TextSelection.wordAt(glyphs, (box.left + box.right) / 2, (box.top + box.bottom) / 2, reach = 0f))
+        val expected = TextSelection.text(glyphs, word)
+        // The page, with the screen reader's Copy the text of this page; at the top of the list, so its
+        // left and top edges show, and its scale is its width over the page's.
+        val page = find("the first page") { it.action(app.getString(R.string.reader_copy_page)) != null && it.says(app.getString(R.string.reader_page_of_spoken, 1, 3)) }
+        val bounds = Rect().also(page::getBoundsInScreen)
+        val scale = bounds.width() / session.document.sizes[0].first
+        val x = bounds.left + (box.left + box.right) / 2 * scale
+        val y = bounds.top + (box.top + box.bottom) / 2 * scale
+        // Something else on the clipboard first, so that only the copy can put the word there. Read
+        // while Usugami is in front: from Android 10 only the app in front may read the clipboard.
+        val clipboard = onMain { app.getSystemService(ClipboardManager::class.java) }
+        onMain { clipboard.setPrimaryClip(ClipData.newPlainText("test", "Not copied yet")) }
+
+        // A long-press on the word: the bar with Copy shows.
+        val down = SystemClock.uptimeMillis()
+        touch(down, MotionEvent.ACTION_DOWN, x, y)
+        Thread.sleep(ViewConfiguration.getLongPressTimeout() + 400L)
+        touch(down, MotionEvent.ACTION_UP, x, y)
+        click(find("Copy") { it.says(app.getString(R.string.reader_copy)) })
+        // Copy puts the word on the clipboard, and the bar goes.
+        waitUntil("the word on the clipboard") { onMain { clipboard.primaryClip?.getItemAt(0)?.text?.toString() } == expected }
+        waitUntil("the bar to go") { nodes().none { it.says(app.getString(R.string.reader_copy)) } }
+
+        // A screen reader's "Copy the text of this page" copies the whole page, with no selecting.
+        val pageNow = find("the first page") { it.action(app.getString(R.string.reader_copy_page)) != null && it.says(app.getString(R.string.reader_page_of_spoken, 1, 3)) }
+        assertTrue(pageNow.performAction(pageNow.action(app.getString(R.string.reader_copy_page))!!.id))
+        waitUntil("the page's text on the clipboard") { onMain { clipboard.primaryClip?.getItemAt(0)?.text?.toString() } == TextSelection.text(glyphs, glyphs.glyphs.indices) }
     }
 
     @Test fun flattenSaysWhatItDoesAndWhenThereIsNothingToFlatten() {
@@ -1040,9 +1309,86 @@ class ScreensDeviceTest {
         assertTrue(clickable(actionButton(R.string.pdf_redact_action)).isEnabled)
     }
 
+    /**
+     * Two pages: "SECRET NAME" on the first, and on the second glyphs of a font that doesn't say
+     * which letters they stand for (no ToUnicode map, a character collection of its own).
+     */
+    private fun unreadPdf(file: File): File = file.also {
+        PDDocument().use { doc ->
+            writeText(doc, PDPage(PDRectangle.A4).also(doc::addPage), "SECRET NAME")
+            val page = PDPage(PDRectangle.A4).also(doc::addPage)
+            page.cosObject.setItem(COSName.RESOURCES, COSDictionary().apply {
+                setItem(COSName.FONT, COSDictionary().apply { setItem("C1", cjkFont("Identity-H", "Identity", 0)) })
+            })
+            page.setContents(PDStream(doc, "BT /C1 20 Tf 72 700 Td <000100020003> Tj ET\n".byteInputStream(Charsets.ISO_8859_1)))
+            doc.save(file)
+        }
+    }
+
+    /** Under Find text, a notice names the pages it couldn't read, and stays after the message. */
+    @Test fun redactSaysWhichPagesFindTextCouldNotRead() {
+        val activity = launch()
+        val pdfVm = openTool(R.string.tool_redact, activity)
+        onMain { pdfVm.addPdfs(listOf(picked("unread.pdf", unreadPdf(File(app.cacheDir, "test-unread.pdf")).readBytes())), replace = true) }
+        find("the PDF's card") { it.says("unread.pdf") }
+        type(find("the Find text field") { it.isEditable }, "secret")
+        click(find("the Find button") { it.says(app.getString(R.string.redact_find_action)) && clickable(it).isEnabled })
+        find("the message") { it.says(app.resources.getQuantityString(R.plurals.redact_found, 1, 1)) }
+        find("the notice") { it.says(app.resources.getQuantityString(R.plurals.redact_find_unread, 1, "2")) }
+        assertEquals(listOf(1), onMain { pdfVm.redactUnread.value.toList() })
+    }
+
+    /**
+     * Opens the converter for [kind] (titled [title]) from Home, empty, as Documents to PDF does for
+     * files of that kind that were all refused: the picker it opens belongs to another app.
+     */
+    private fun openConverter(kind: SharedKind, title: Int, activity: MainActivity): PdfToolsViewModel {
+        find("Home") { it.says(app.getString(R.string.settings)) }
+        val mainVm = onMain { ViewModelProvider(activity)[MainViewModel::class.java] }
+        onMain { mainVm.openConverter(kind) }
+        waitUntil("Home to slide away") { nodes().none { it.says(app.getString(R.string.settings)) } }
+        find("the converter's title") { it.says(app.getString(title)) }
+        return onMain { ViewModelProvider(activity)[PdfToolsViewModel::class.java] }
+    }
+
+    /**
+     * Home's Documents to PDF: the search finds it by what finds the four converters, and the files
+     * picked open the converter of the kind most of them are, with the others named.
+     */
+    @Test fun documentsToPdfOpensTheConverterForTheFilesPicked() {
+        val english = resourcesIn(AppLanguage.ENGLISH)
+        val activity = launch(language = AppLanguage.ENGLISH)
+        val documents = english.getString(R.string.tool_documents)
+        findBelow("Documents to PDF") { it.text?.contains(documents) == true }
+        // Words for what Word, PowerPoint, Excel and EPUB to PDF take; "spreadsheet" finds it alone.
+        for (words in listOf("docx", "slides", "e-book")) {
+            type(searchField(), words)
+            waitUntil("\"$words\" to find Documents to PDF") { documents in shownTools(english) }
+        }
+        type(searchField(), "spreadsheet")
+        waitForTools(documents, resources = english)
+        click(find("the clear button") { it.says(english.getString(R.string.home_search_clear)) })
+        find("the sections again") { it.says(english.getString(R.string.home_section_create)) }
+
+        // As if picked: two presentations and a document.
+        val mainVm = onMain { ViewModelProvider(activity)[MainViewModel::class.java] }
+        onMain { mainVm.pickDocuments(listOf(pdf("deck.pptx", "Deck.pptx"), pdf("deck.pptx", "Deck 2.pptx"), pdf("report.docx", "Report.docx"))) }
+        // The message shows for a few seconds only: looked for first.
+        find("the message naming the document left out") { it.says(english.getQuantityString(R.plurals.share_other_kind, 1, 1, "Report.docx")) }
+        find("PowerPoint to PDF") { it.says(english.getString(R.string.tool_powerpoint)) }
+        val pdfVm = onMain { ViewModelProvider(activity)[PdfToolsViewModel::class.java] }
+        waitUntil("both presentations to be added") { onMain { pdfVm.documents.value.map { it.name } } == listOf("Deck.pptx", "Deck 2.pptx") }
+        find("the second presentation's card") { it.says("Deck 2.pptx") }
+
+        // Back goes Home, as from a converter opened there.
+        backKey()
+        find("Home") { it.says(english.getString(R.string.settings)) }
+        findBelow("Documents to PDF, on Home") { it.text?.contains(documents) == true }
+    }
+
     @Test fun wordToPdfConvertsTheDocumentAndKeepsItThroughRecreation() {
         val first = launch()
-        val firstVm = openTool(R.string.tool_word, first)
+        val firstVm = openConverter(SharedKind.WORD, R.string.tool_word, first)
         find("the card to pick a file") { it.says(app.getString(R.string.pick_word)) }
         assertFalse("Nothing to convert yet", clickable(button(R.string.convert)).isEnabled)
 
@@ -1092,7 +1438,7 @@ class ScreensDeviceTest {
 
     @Test fun powerPointToPdfRefusesOtherFilesAndConverts() {
         val activity = launch()
-        val pdfVm = openTool(R.string.tool_powerpoint, activity)
+        val pdfVm = openConverter(SharedKind.POWERPOINT, R.string.tool_powerpoint, activity)
         find("the card to pick a file") { it.says(app.getString(R.string.pick_powerpoint)) }
 
         // A Word document isn't a presentation.
@@ -1130,7 +1476,7 @@ class ScreensDeviceTest {
 
     @Test fun epubToPdfRefusesOtherFilesAndKeepsThePageSizeChosen() {
         val first = launch()
-        val firstVm = openTool(R.string.tool_epub, first)
+        val firstVm = openConverter(SharedKind.EPUB, R.string.tool_epub, first)
         find("the card to pick a file") { it.says(app.getString(R.string.pick_epub)) }
         assertFalse("Nothing to convert yet", clickable(button(R.string.convert)).isEnabled)
 
@@ -1191,7 +1537,8 @@ class ScreensDeviceTest {
     /**
      * Stands in for the camera app: catches the photo Usugami asks for, "takes" [photo] into the file
      * it was given and returns, or with [noCamera], fails as on a phone without a camera app. Without
-     * a [photo], it is closed without taking one, or with [saysTaken], says it took one but saves nothing.
+     * a [photo], it leaves that file empty, as a camera app that opened it and saved nothing does, and
+     * is closed without taking one, or with [saysTaken], says it took one.
      */
     private inner class Camera(
         private val photo: Bitmap?,
@@ -1205,10 +1552,10 @@ class ScreensDeviceTest {
             if (intent.action != MediaStore.ACTION_IMAGE_CAPTURE) return null
             if (noCamera) throw ActivityNotFoundException()
             opened++
-            if (photo == null) return Instrumentation.ActivityResult(if (saysTaken) Activity.RESULT_OK else Activity.RESULT_CANCELED, null)
             val output = IntentCompat.getParcelableExtra(intent, MediaStore.EXTRA_OUTPUT, Uri::class.java)!!
             assertTrue("The camera app may write the file", (intent.flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0)
-            app.contentResolver.openOutputStream(output)!!.use { photo.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+            app.contentResolver.openOutputStream(output)!!.use { photo?.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+            if (photo == null) return Instrumentation.ActivityResult(if (saysTaken) Activity.RESULT_OK else Activity.RESULT_CANCELED, null)
             taken++
             return Instrumentation.ActivityResult(Activity.RESULT_OK, null)
         }
@@ -1579,21 +1926,43 @@ class ScreensDeviceTest {
     @Test fun aScanFromHomeThatLeavesNoPageGoesBackHome() {
         val activity = launch()
         val vm = onMain { ViewModelProvider(activity)[MainViewModel::class.java] }
-        val onHome = { nodes().any { it.says(app.getString(R.string.scan_title)) } && nodes().none { it.says(app.getString(R.string.empty_title)) } }
-        fun stillHome() {
-            waitUntil("Home") { onHome() }
-            Thread.sleep(1_000)
-            assertTrue("Still Home, not the editor", onHome())
+        // Read afresh: the tree as read here can still have a screen that has gone.
+        fun shows(label: Int) = app.getString(label).let { text -> nodes().any { it.says(text) && it.refresh() && it.says(text) } }
+        val onHome = { shows(R.string.scan_title) && !shows(R.string.empty_title) }
+        val unreadable = app.resources.getQuantityString(R.plurals.msg_failed_import, 1, 1)
+
+        /**
+         * Home, staying, once the step is over: the camera's answer taken in and, with [told], the user
+         * told the image can't be read. Right after the tap Home still shows, before the editor has come
+         * in and gone. The message is dismissed, as a screen reader can: messages wait their turn, and
+         * the photo's crop screen below would have its Next under them.
+         */
+        fun stillHome(told: Boolean) {
+            waitUntil("the camera's answer to be taken in") { onMain { !vm.cameraOpen.value && vm.pendingImports.value == 0 } }
+            if (told) {
+                val dismiss = AccessibilityAction.ACTION_DISMISS
+                // Read at each look: the message moves with the screen showing it, which may be leaving.
+                waitUntil("the message to be dismissed") {
+                    nodes().firstOrNull { it.says(unreadable) }?.let { message -> ancestor(message) { dismiss in it.actionList } }
+                        ?.performAction(dismiss.id) == true
+                }
+                waitUntil("the message to go") { nodes().none { it.says(unreadable) } }
+            }
+            var since = SystemClock.uptimeMillis()
+            waitUntil("Home to stay, not the editor") {
+                if (!onHome()) since = SystemClock.uptimeMillis()
+                SystemClock.uptimeMillis() - since >= 1_000
+            }
             assertTrue(onMain { vm.items.value.isEmpty() })
         }
-        for (camera in listOf(Camera(null), Camera(null, saysTaken = true))) {
+        for ((camera, told) in listOf(Camera(null) to false, Camera(null, saysTaken = true) to true)) {
             withCamera(camera) {
                 click(button(R.string.add_from_camera))
                 waitUntil("the camera to open") { camera.opened == 1 }
                 // The camera's file goes once Usugami knows it was closed.
                 waitUntil("the camera's file to go") { File(app.cacheDir, "camera").list().isNullOrEmpty() }
             }
-            stillHome()
+            stillHome(told)
         }
         // Only the start of a JPEG.
         val broken = File(app.cacheDir, "test-photos/broken.jpg").apply {
@@ -1601,10 +1970,12 @@ class ScreensDeviceTest {
             writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte()) + ByteArray(2_000))
         }
         pickToScan(listOf(Uri.fromFile(broken)))
-        stillHome()
+        stillHome(told = true)
 
         withCamera(Camera(PagePhotos.photo())) {
             click(button(R.string.add_from_camera))
+            // The photo is added and its page looked for before its crop screen comes in.
+            find("the crop screen, which found the page") { it.says(app.getString(R.string.crop_found)) }
             press(R.string.crop_next)
             press(R.string.crop_done)
         }
@@ -1614,6 +1985,111 @@ class ScreensDeviceTest {
         waitUntil("the page to be dropped") { onMain { vm.items.value.isEmpty() && vm.cropping.value.isEmpty() && vm.pendingImports.value == 0 } }
         Thread.sleep(1_000)
         assertFalse("Still the editor, not Home", onHome())
+    }
+
+    /**
+     * Waits for the crop screen of an ID card's [side] (its name under the title, as a screen reader
+     * hears it with the title, and the hint speaking of the card), running [meanwhile] at each look.
+     */
+    private fun cardCropScreen(side: String, meanwhile: (List<AccessibilityNodeInfo>) -> Unit = {}) {
+        val pane = app.getString(R.string.scan_pane_title, app.getString(R.string.crop_title), side)
+        waitUntil("the crop screen of the card's $side") {
+            val shown = nodes()
+            meanwhile(shown)
+            shown.any { it.says(app.getString(R.string.card_crop_found)) } && shown.any { it.says(side) } &&
+                (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || shown.any { it.paneTitle?.toString() == pane })
+        }
+    }
+
+    /**
+     * Home's ID card button: the front's prompt, Take photo, the front's crop screen (the prompt never
+     * says "Back side" before it has come in), Next, Next, the back's prompt, Take photo, the back's
+     * crop screen, Next, Done: the editor with one page, the card, whose two images share its number.
+     */
+    @Test fun anIdCardIsScannedFrontAndBackOntoOnePage() {
+        val activity = launch()
+        val vm = onMain { ViewModelProvider(activity)[MainViewModel::class.java] }
+        val front = app.getString(R.string.card_front)
+        val back = app.getString(R.string.card_back)
+        click(button(R.string.scan_id_card))
+        // Its heading: Home has left the tree by then, with its own Take photo.
+        find("the front's prompt") { it.says(front) }
+        val camera = Camera(PagePhotos.photo())
+        withCamera(camera) {
+            press(R.string.add_from_camera)
+            cardCropScreen(front) { shown ->
+                assertTrue("The front's prompt said \"$back\" before its crop screen came in", shown.none { it.says(back) })
+            }
+            press(R.string.crop_next)
+            find("the front's filters step") { it.says(app.getString(R.string.filter_title)) }
+            press(R.string.crop_next)
+
+            find("the back's prompt") { it.says(back) }
+            press(R.string.add_from_camera)
+            cardCropScreen(back)
+            press(R.string.crop_next)
+            find("the back's filters step") { it.says(app.getString(R.string.filter_title)) }
+            press(R.string.crop_done)
+        }
+        assertEquals(2, camera.taken)
+        find("the editor") { it.says(app.getString(R.string.convert)) }
+        find("the card's page") { it.says(app.getString(R.string.crop_page, 1)) }
+        assertEquals(1, nodes().count { it.says(app.getString(R.string.card_title)) })
+        assertTrue(nodes().none { it.says(app.getString(R.string.crop_page, 2)) })
+        val sides = onMain { vm.items.value }
+        assertEquals(2, sides.size)
+        assertTrue("$sides", sides[0].card != 0L && sides[0].card == sides[1].card)
+        assertNull(onMain { vm.card.value })
+        waitUntil("the sides to be cropped") { onMain { vm.cropping.value.isEmpty() && vm.pendingImports.value == 0 } }
+        onMain { vm.clearAll() }
+        runBlocking { vm.awaitFileWork() }
+    }
+
+    /**
+     * Cancel on the ID card's front prompt goes back Home, not by way of the empty editor, with
+     * nothing added. A card whose back is skipped with No back side is kept with its front alone: its
+     * Add back side asks for the back, and Back from there leaves the card as it was.
+     */
+    @Test fun aCardWithoutABackIsKeptAndCancelFromTheFrontGoesHome() {
+        val activity = launch()
+        val vm = onMain { ViewModelProvider(activity)[MainViewModel::class.java] }
+        val front = app.getString(R.string.card_front)
+        val back = app.getString(R.string.card_back)
+        click(button(R.string.scan_id_card))
+        find("the front's prompt") { it.says(front) }
+        click(button(R.string.cancel))
+        waitUntil("Home") {
+            val shown = nodes()
+            assertTrue("The empty editor showed on the way Home", shown.none { it.says(app.getString(R.string.empty_title)) })
+            shown.any { it.says(app.getString(R.string.scan_title)) }
+        }
+        assertTrue(onMain { vm.items.value.isEmpty() && vm.card.value == null })
+
+        click(button(R.string.scan_id_card))
+        find("the front's prompt, again") { it.says(front) }
+        withCamera(Camera(PagePhotos.photo())) {
+            press(R.string.add_from_camera)
+            cardCropScreen(front)
+            press(R.string.crop_next)
+            find("the front's filters step") { it.says(app.getString(R.string.filter_title)) }
+            press(R.string.crop_next)
+        }
+        find("the back's prompt") { it.says(back) }
+        press(R.string.card_no_back)
+        val add = find("the card's Add back side") { it.says(app.getString(R.string.card_add_back)) }
+        val card = onMain { vm.items.value.single() }
+        assertNotEquals(0L, card.card)
+        assertNull(onMain { vm.card.value })
+
+        click(add)
+        find("the back's prompt, again") { it.says(back) }
+        backKey()
+        find("the editor, again") { it.says(app.getString(R.string.card_add_back)) }
+        assertNull(onMain { vm.card.value })
+        assertEquals(listOf(card.id to card.card), onMain { vm.items.value.map { it.id to it.card } })
+        waitUntil("the front to be cropped") { onMain { vm.cropping.value.isEmpty() && vm.pendingImports.value == 0 } }
+        onMain { vm.clearAll() }
+        runBlocking { vm.awaitFileWork() }
     }
 
     /**
@@ -1872,6 +2348,32 @@ class ScreensDeviceTest {
         onMain { vm.clearAll() }
     }
 
+    /**
+     * A launcher shortcut used over a PDF made and not saved yet asks first. Keep leaves the PDF as it
+     * was; the same shortcut used again, Discard opens its tool, empty. (The second use is what tells
+     * that a shortcut taken by the screen doesn't stop the next one reaching it.)
+     */
+    @Test fun aShortcutOverAnUnsavedPdfAsksFirst() {
+        val activity = launch()
+        val pdfVm = unsavedCompressResult(activity)
+
+        onMain { activity.startActivity(AppShortcuts.intent(activity, ShortcutTarget.MERGE)) }
+        find("the question") { it.says(app.getString(R.string.pdf_discard_title)) }
+        find("what it says") { it.says(app.getString(R.string.shortcut_discard_body)) }
+        click(find("the Keep button") { it.says(app.getString(R.string.keep)) })
+        // Gone before the shortcut is used again: while a question shows, a shortcut does nothing.
+        waitUntil("the question to go") { nodes().none { it.says(app.getString(R.string.pdf_discard_title)) } }
+        find("the result screen, still showing") { it.says(app.getString(R.string.result_heading_one)) }
+        assertTrue("The PDF is kept", onMain { pdfVm.result.value != null })
+
+        onMain { activity.startActivity(AppShortcuts.intent(activity, ShortcutTarget.MERGE)) }
+        find("the question, again") { it.says(app.getString(R.string.pdf_discard_title)) }
+        click(find("the Discard button") { it.says(app.getString(R.string.discard)) })
+        find("Merge PDF") { it.says(app.getString(R.string.tool_merge)) }
+        find("its card to add PDFs, empty") { it.says(app.getString(R.string.add_pdfs)) }
+        waitUntil("the PDF to be discarded") { onMain { pdfVm.result.value == null && pdfVm.inputs.value.isEmpty() } }
+    }
+
     /** Files put in Downloads by a test, as another app's files to share; deleted after it. */
     private val downloadsMade = ArrayList<Uri>()
 
@@ -1929,9 +2431,19 @@ class ScreensDeviceTest {
         val pdfVm = onMain { ViewModelProvider(first)[PdfToolsViewModel::class.java] }
         assertEquals(3, onMain { pdfVm.inputs.value.single().pageCount })
         val tools = listOf(
-            R.string.tool_merge, R.string.tool_split, R.string.tool_reorganize, R.string.tool_delete_pages, R.string.tool_rotate,
-            R.string.tool_edit, R.string.tool_sign, R.string.tool_page_numbers, R.string.tool_watermark,
-            R.string.tool_compress, R.string.tool_redact, R.string.tool_flatten,
+            R.string.tool_reader,
+            R.string.tool_merge,
+            R.string.tool_split,
+            R.string.tool_reorganize,
+            R.string.tool_page_layout,
+            R.string.tool_sign,
+            R.string.tool_page_numbers,
+            R.string.tool_watermark,
+            R.string.tool_compress,
+            R.string.tool_redact,
+            R.string.tool_flatten,
+            R.string.tool_document_info,
+            R.string.tool_pdf_to_images_or_text,
         )
         for (tool in tools) findBelow("${app.getString(tool)} under Choose a tool") { it.says(app.getString(tool)) }
         assertFalse("No converter", texts().contains(app.getString(R.string.tool_word)))
@@ -1960,9 +2472,21 @@ class ScreensDeviceTest {
         chooseATool()
         find("the second PDF") { it.says("Second $stamp.pdf") }
         find("the hint") { it.says(app.getString(R.string.share_several_hint)) }
-        val others = listOf(R.string.tool_split, R.string.tool_reorganize, R.string.tool_rotate, R.string.tool_sign, R.string.tool_edit, R.string.tool_redact)
-            .map(app::getString)
-        for (tool in listOf(R.string.tool_merge, R.string.tool_page_numbers, R.string.tool_watermark, R.string.tool_compress, R.string.tool_flatten)) {
+        val others = listOf(
+            R.string.tool_reader,
+            R.string.tool_split,
+            R.string.tool_reorganize,
+            R.string.tool_sign,
+            R.string.tool_redact,
+        ).map(app::getString)
+        val forSeveral = listOf(
+            R.string.tool_merge,
+            R.string.tool_page_numbers,
+            R.string.tool_watermark,
+            R.string.tool_compress,
+            R.string.tool_flatten,
+        )
+        for (tool in forSeveral) {
             findBelow(app.getString(tool)) { it.says(app.getString(tool)) }
             assertTrue("Only the tools for several", texts().none { it in others })
         }
@@ -1992,6 +2516,125 @@ class ScreensDeviceTest {
         actionButton(R.string.convert)
         val pdfVm = onMain { ViewModelProvider(activity)[PdfToolsViewModel::class.java] }
         assertEquals(listOf("Report $stamp.docx"), onMain { pdfVm.documents.value.map { it.name } })
+    }
+
+    /**
+     * A PDF opened from another app ("Open with") shows in the reader, with its name and the page
+     * showing. Go to page, from the page showing, shows the page asked for, still after the activity
+     * is recreated. Find text, searched with the keyboard's search key, marks the first match from the
+     * page showing on and counts the PDF's; Next goes round, and closing the search brings the
+     * reader's bar back. More, Tools leaves for Choose a tool with the PDF, Read and annotate first,
+     * and Back from there goes Home. Opened again while Usugami shows, it shows again from its first
+     * page, and Back leaves Usugami for the app that opened it.
+     */
+    @Test fun aPdfOpenedFromAnotherAppShowsInTheReaderAndBackLeavesUsugami() {
+        val name = "Opened ${System.currentTimeMillis()}.pdf"
+        val pdf = inDownloads(name, "application/pdf", asset("alpha.pdf"))
+        // As another app asks Usugami to open a file; a new one each time, as the flags added go with it.
+        fun openWith() = Intent(Intent.ACTION_VIEW).setDataAndType(pdf, "application/pdf").setClass(app, MainActivity::class.java)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val activity = launchSharing(openWith())
+        find("the file's name in the bar") { it.says(name) }
+        find("the page showing, of three") { it.says(app.getString(R.string.reader_page_of, 1, 3)) }
+        val pdfVm = onMain { ViewModelProvider(activity)[PdfToolsViewModel::class.java] }
+        val first = onMain { pdfVm.inputs.value.single().id }
+
+        // Go to page, from the page showing: Go is on only for a page the PDF has.
+        click(find("the page showing, a button") { it.says(app.getString(R.string.reader_page_of, 1, 3)) })
+        val field = find("the page number") { it.isEditable }
+        val go = { find("the Go button") { it.says(app.getString(R.string.reader_go)) } }
+        type(field, "4")
+        waitUntil("Go to be off for a page the PDF hasn't") { !clickable(go()).isEnabled }
+        type(field, "3")
+        waitUntil("Go to be on") { clickable(go()).isEnabled }
+        click(go())
+        find("page 3 showing") { it.says(app.getString(R.string.reader_page_of, 3, 3)) }
+        // It stays there when the activity is recreated, as it is on rotation.
+        onMain { activity.recreate() }
+        recreatedFrom(activity)
+        find("page 3, still showing") { it.says(app.getString(R.string.reader_page_of, 3, 3)) }
+
+        // Find text, from the page showing: a word of page 3 as text extraction reads it. The match marked
+        // is the first from page 3 on, numbered among the PDF's (the page indicator says "3 of 3" too: the
+        // count is told by what a screen reader hears).
+        val pages = PDDocument.load(asset("alpha.pdf")).use { doc ->
+            (1..doc.numberOfPages).map { PDFTextStripper().apply { startPage = it; endPage = it }.getText(doc) }
+        }
+        val word = pages[2].split(Regex("\\s+")).first { it.isNotBlank() }
+        val counts = pages.map { Regex(Regex.escape(word), RegexOption.IGNORE_CASE).findAll(it).count() }
+        val marked = counts[0] + counts[1] + 1
+        click(find("Find text") { it.says(app.getString(R.string.redact_find)) })
+        val search = find("the search field") { it.isEditable }
+        type(search, word)
+        // The keyboard's search key.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            assertTrue(search.performAction(AccessibilityAction.ACTION_IME_ENTER.id))
+        } else {
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER)
+        }
+        find("the match marked, counted") { it.says(app.getString(R.string.reader_find_count_spoken, marked, counts.sum())) }
+        click(find("Next match") { it.says(app.getString(R.string.reader_find_next)) })
+        find("the next match, round and round") { it.says(app.getString(R.string.reader_find_count_spoken, marked % counts.sum() + 1, counts.sum())) }
+        // Closed, the matches go and the reader's bar is back.
+        click(find("Close search") { it.says(app.getString(R.string.reader_find_close)) })
+        find("the file's name, back in the bar") { it.says(name) }
+        assertTrue(onMain { pdfVm.reader.session.value!!.found.value.matches.isEmpty() })
+
+        // More, Tools: Choose a tool with the PDF, Read and annotate first. Back from there goes Home.
+        click(find("More") { it.says(app.getString(R.string.reader_more)) })
+        click(find("Tools in More") { it.says(app.getString(R.string.reader_tools)) })
+        chooseATool()
+        find("the PDF on Choose a tool") { it.says(name) }
+        waitUntil("Read and annotate to be the first tool") { shownTools().firstOrNull() == app.getString(R.string.tool_reader) }
+        assertEquals(listOf(first), onMain { pdfVm.inputs.value.map { it.id } })
+        backKey()
+        find("Home") { it.says(app.getString(R.string.settings)) }
+
+        // Opened again while Usugami shows: the reader shows it anew.
+        shareTo(openWith())
+        waitUntil("the file opened again to show") { pdfVm.reader.session.value?.id.let { it != null && it != first } }
+        find("the file's name, again") { it.says(name) }
+        find("the page showing, again") { it.says(app.getString(R.string.reader_page_of, 1, 3)) }
+        // Back returns to the app that opened it: Usugami steps behind it.
+        backKey()
+        waitUntil("Usugami to leave") { resumedMain() == null }
+    }
+
+    /**
+     * Home's section View has Read and annotate; a file opened from Home shows in the reader, and Back
+     * returns to Home. A result's Open shows its PDF in a preview, with its name and pages, Go to page and
+     * Open with another app but no Tools, and Back returns to the result as it was, not saved.
+     */
+    @Test fun filesOpenInTheReaderFromHomeAndResultsInAPreview() {
+        val activity = launch()
+        find("the section View") { it.says(app.getString(R.string.home_section_view)) }
+        find("Read and annotate") { it.text?.contains(app.getString(R.string.tool_reader)) == true }
+        // As the file picked with Read and annotate is opened: the picker itself can't be driven.
+        val mainVm = onMain { ViewModelProvider(activity)[MainViewModel::class.java] }
+        onMain { mainVm.open(pdf("alpha.pdf"), null, ReadFrom.HOME) }
+        find("the page showing, of three") { it.says(app.getString(R.string.reader_page_of, 1, 3)) }
+        find("the file's name in the bar") { it.says("alpha.pdf") }
+        backKey()
+        find("Home") { it.says(app.getString(R.string.settings)) }
+
+        val pdfVm = unsavedCompressResult(activity)
+        val made = onMain { pdfVm.result.value }!!
+        click(button(R.string.open))
+        find("the preview's pages") { it.says(app.getString(R.string.reader_page_of, 1, 3)) }
+        find("the result's name in the bar") { it.says(made.single().name) }
+        click(find("More") { it.says(app.getString(R.string.reader_more)) })
+        find("Go to page in More") { it.says(app.getString(R.string.reader_go_to_page)) }
+        find("Open with another app in More") { it.says(app.getString(R.string.reader_open_elsewhere)) }
+        assertFalse("No Tools in a preview", texts().contains(app.getString(R.string.reader_tools)))
+        // The menu has the focus: Back closes it.
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntil("the menu to close") { nodes().none { it.says(app.getString(R.string.reader_open_elsewhere)) } }
+
+        backKey()
+        find("the result screen, as it was") { it.says(app.getString(R.string.result_heading_one)) }
+        assertSame(made, onMain { pdfVm.result.value })
+        assertFalse("Not saved", onMain { pdfVm.saved.value })
+        assertNull("The preview is closed", onMain { pdfVm.reader.preview.value })
     }
 
     /** A PDF shared over a PDF not saved yet asks first; kept, the shared PDF opens once the tool is left. */
@@ -2248,8 +2891,9 @@ class ScreensDeviceTest {
     @Test fun firstLaunchAsksForLanguage() {
         languageChanged = true
         launch(firstRun = true)
-        for (language in AppLanguage.entries) find(language.nativeName) { it.says(language.nativeName) }
-        click(find("English") { it.says(AppLanguage.ENGLISH.nativeName) })
+        // Seven cards may not all fit on the screen: those further down show as it scrolls.
+        for (language in AppLanguage.entries) findBelow(language.nativeName) { it.says(language.nativeName) }
+        click(findAbove("English") { it.says(AppLanguage.ENGLISH.nativeName) })
         // In English now, whatever the phone's language.
         val images = stringIn(AppLanguage.ENGLISH, R.string.tool_images)
         find("Home") { it.text?.contains(images) == true }
@@ -2274,8 +2918,8 @@ class ScreensDeviceTest {
         assertEquals(DONATE_URL, donate.dataString)
         find("About in Settings") { it.says(english(R.string.about)) }
         click(find("the language entry") { it.says(english(R.string.settings_language)) })
-        for (language in AppLanguage.entries) find("${language.nativeName} in the dialog") { it.says(language.nativeName) }
-        click(find("Français") { it.says(AppLanguage.FRENCH.nativeName) })
+        for (language in AppLanguage.entries) findBelow("${language.nativeName} in the dialog") { it.says(language.nativeName) }
+        click(findAbove("Français") { it.says(AppLanguage.FRENCH.nativeName) })
 
         val french = recreatedFrom(first)
         assertEquals("fr", onMain { french.resources.configuration.locales[0].language })
@@ -2395,6 +3039,7 @@ class ScreensDeviceTest {
         val activity = launch()
         unsavedCompressResult(activity)
         findBelow("Start over") { it.says(app.getString(R.string.start_over)) }
+        if (PdfPrinting.available(app)) find("the Print button") { it.says(app.getString(R.string.print)) }
         assertTrue(nodes().none { it.says(app.getString(R.string.zip_button)) })
     }
 
@@ -2469,6 +3114,7 @@ class ScreensDeviceTest {
         find("the notes' original kept") { it.says(app.getString(R.string.original_kept)) }
         find("the notes' own Open button") { it.says(app.getString(R.string.open_file, files[1].name)) }
         find("the notes' own Share button") { it.says(app.getString(R.string.share_file, files[1].name)) }
+        if (PdfPrinting.available(app)) find("the notes' own Print button") { it.says(app.getString(R.string.print_file, files[1].name)) }
 
         // The notes alone, with "Save as" (offered in a menu beside Downloads where there are Downloads).
         val document = File(app.cacheDir, "output/test-picked/saved-one.pdf").apply { parentFile!!.mkdirs(); writeBytes(ByteArray(0)) }
@@ -2498,6 +3144,77 @@ class ScreensDeviceTest {
         } finally {
             downloads(stamp).forEach { app.contentResolver.delete(it.first, null, null) }
         }
+    }
+
+    /** A one-page PDF of [text] in blue, the way a picker gives it; or of a gradient Black and white can't turn gray ([addUnconvertibleMeshPage]). */
+    private fun coloredPdf(name: String, text: String? = null): Uri {
+        val out = java.io.ByteArrayOutputStream()
+        PDDocument().use { doc ->
+            if (text == null) {
+                addUnconvertibleMeshPage(doc)
+            } else {
+                val page = PDPage(PDRectangle.A4).also(doc::addPage)
+                PDPageContentStream(doc, page).use { content ->
+                    content.beginText()
+                    content.setNonStrokingColor(0.1f, 0.2f, 0.8f)
+                    content.setFont(PDType1Font.HELVETICA, 24f)
+                    content.newLineAtOffset(72f, 700f)
+                    content.showText(text)
+                    content.endText()
+                }
+            }
+            doc.save(out)
+        }
+        return picked(name, out.toByteArray())
+    }
+
+    /**
+     * Compress PDF's Black and white: off at first, on with a tap and still on after the activity is
+     * recreated; with a second PDF it shows once, for both, and both come out gray. Back from the
+     * result it is still on, and a PDF with a part it can't turn gray says so on its card.
+     */
+    @Test fun compressHasABlackAndWhiteSwitchForAllPdfs() {
+        val first = launch()
+        val pdfVm = openTool(R.string.tool_compress, first)
+        onMain { pdfVm.addPdfs(listOf(coloredPdf("blue.pdf", "BLUE")), replace = false) }
+        waitUntil("the PDF to be added") { onMain { pdfVm.inputs.value.size } == 1 }
+        val title = app.getString(R.string.compress_gray)
+        // The row, which flips the switch: under the levels, so above the file name.
+        fun blackAndWhite() = checkNotNull(ancestor(findAbove("the Black and white row") { it.says(title) }) { it.isCheckable })
+        find("what it does") { it.says(app.getString(R.string.compress_gray_detail)) }
+        assertFalse("Off at first", blackAndWhite().chosen)
+        click(blackAndWhite())
+        waitUntil("Black and white to be on") { blackAndWhite().chosen }
+
+        // As on rotation.
+        onMain { first.recreate() }
+        recreatedFrom(first)
+        assertTrue("Still on after the activity is recreated", blackAndWhite().chosen)
+
+        onMain { pdfVm.addPdfs(listOf(coloredPdf("navy.pdf", "NAVY")), replace = false) }
+        waitUntil("the PDFs to be added") { onMain { pdfVm.inputs.value.size } == 2 }
+        // Read afresh: the detail changes in place.
+        find("what it does for all") { it.refresh() && it.says(app.getString(R.string.compress_gray_detail_many)) }
+        assertEquals("One switch for both", 1, nodes().count { it.refresh() && it.says(title) })
+        assertTrue("Still on with two PDFs", blackAndWhite().chosen)
+        val compress = app.resources.getQuantityString(R.plurals.pdf_compress_action_many, 2, 2)
+        click(find("the enabled button") { it.refresh() && it.says(compress) && ancestor(it) { node -> node.isClickable }?.isEnabled == true })
+        find("the result screen") { it.says(app.getString(R.string.result_heading_many)) }
+        val files = onMain { pdfVm.result.value!! }
+        assertEquals(listOf("blue_compressed.pdf", "navy_compressed.pdf"), files.map { it.name })
+        assertTrue("Both are gray: ${files.map { it.gray }}", files.all { it.gray?.changed == true && it.gray?.colorPages?.isEmpty() == true })
+
+        // Back at the tool, still on; a PDF it can't turn gray all through.
+        backKey()
+        assertTrue("Still on after the result", blackAndWhite().chosen)
+        onMain { pdfVm.addPdfs(listOf(coloredPdf("mesh.pdf")), replace = true) }
+        waitUntil("the PDF to replace them") { onMain { pdfVm.inputs.value.map { it.name } } == listOf("mesh.pdf") }
+        find("what it does for one") { it.refresh() && it.says(app.getString(R.string.compress_gray_detail)) }
+        click(relabelledButton(R.string.pdf_compress_action))
+        find("the result screen") { it.says(app.getString(R.string.result_heading_one)) }
+        assertEquals(listOf(0), onMain { pdfVm.result.value!!.single().gray?.colorPages })
+        find("the line under the PDF") { it.says(app.resources.getQuantityString(R.plurals.gray_color_left, 1, 1, "1")) }
+        find("the message") { it.says(app.getString(R.string.pdf_gray_partial)) }
     }
 
     /**
@@ -2542,7 +3259,7 @@ class ScreensDeviceTest {
      */
     @Test fun severalWordFilesAreConvertedEachIntoItsOwnPdf() {
         val activity = launch()
-        val pdfVm = openTool(R.string.tool_word, activity)
+        val pdfVm = openConverter(SharedKind.WORD, R.string.tool_word, activity)
         find("the card to choose files") { it.says(app.getString(R.string.pick_word)) }
         find("the hint that several can be chosen") { it.says(app.getString(R.string.pick_several_hint)) }
         onMain { pdfVm.addDocuments(listOf(pdf("report.docx", "Garden report.docx"), pdf("report.docx", "Notes.docx")), OfficeKind.WORD) }
@@ -2566,18 +3283,98 @@ class ScreensDeviceTest {
         val english = resourcesIn(AppLanguage.ENGLISH)
         launch(language = AppLanguage.ENGLISH)
         val several = listOf(
-            R.string.tool_word, R.string.tool_powerpoint, R.string.tool_excel, R.string.tool_epub, R.string.tool_page_numbers,
-            R.string.tool_watermark, R.string.tool_compress, R.string.tool_flatten,
+            R.string.tool_documents,
+            R.string.tool_page_numbers,
+            R.string.tool_watermark,
+            R.string.tool_compress,
+            R.string.tool_flatten,
         ).map(english::getString)
         val count = english.getQuantityString(R.plurals.home_search_results, several.size, several.size)
         for (words in listOf("several", "Batch", "many")) {
             type(searchField(), words)
-            // All eight, in Home's order (on a small screen, the first of them).
+            // All five, in Home's order (on a small screen, the first of them).
             waitUntil("the tools found by \"$words\"") {
                 val shown = shownTools(english)
                 nodes().any { it.says(count) } && shown.isNotEmpty() && shown == several.take(shown.size)
             }
         }
+    }
+
+    /**
+     * PDF to images or text, Page layout and Document info open from Home, take a PDF and go back
+     * Home with Back. What their buttons do is for their own tests.
+     */
+    @Test fun theNewToolsOpenFromHomeAndTakeAPdf() {
+        val activity = launch()
+        // In Home's order, top to bottom, as each is scrolled to from where Home was left.
+        for (title in listOf(R.string.tool_page_layout, R.string.tool_document_info, R.string.tool_pdf_to_images_or_text)) {
+            val pdfVm = openToolWithAlpha(title, activity)
+            find("${app.getString(title)}'s screen") { it.says(app.getString(title)) }
+            find("the PDF's card") { it.says("alpha.pdf") }
+            backKey()
+            find("Home") { it.says(app.getString(R.string.settings)) }
+            waitUntil("the PDF to be put away") { onMain { pdfVm.inputs.value.isEmpty() } }
+        }
+    }
+
+    /**
+     * A tool's result of images (as PDF to images or text makes) shows as images: its own heading, each
+     * image's name with its size and no page count, and no Usugami watermark, which is only for PDFs.
+     */
+    @Test fun aResultOfImagesShowsAsImagesWithoutTheWatermarkSwitch() {
+        val activity = launch()
+        val pdfVm = openToolWithAlpha(R.string.tool_page_layout, activity)
+        val names = listOf("alpha_p1.jpg", "alpha_p2.jpg")
+        onMain {
+            pdfVm.process("alpha_pages", pdfVm.inputs.value) {
+                // Written by the job: the cleanup that opening the tool started runs before it, on the same thread.
+                val dir = File(app.cacheDir, "output/tools").apply { mkdirs() }
+                names.map { name ->
+                    val image = File(dir, name)
+                    image.outputStream().use { Bitmap.createBitmap(40, 30, Bitmap.Config.ARGB_8888).compress(Bitmap.CompressFormat.JPEG, 80, it) }
+                    PdfFile(image, 1, 0)
+                }
+            }
+        }
+        find("the heading over images") { it.says(app.getString(R.string.result_heading_image_many)) }
+        find("the first image's row") { it.says(names[0]) }
+        // Before any scrolling, while the top of the screen shows: what is off it isn't in the tree.
+        assertTrue("No watermark switch", nodes().none { it.says(app.getString(R.string.mark_title)) })
+        val onePage = app.resources.getQuantityString(R.plurals.page_count, 1, 1)
+        assertTrue("No page count", nodes().none { it.text?.contains(onePage) == true })
+        findBelow("the second image's row") { it.says(names[1]) }
+    }
+
+    /**
+     * The tool's main button once it says [label] and can be pressed. The options change its words in
+     * place, which the tree as read here may not have caught up with: each node is read afresh.
+     */
+    private fun relabelledButton(label: Int) = find("the enabled \"${app.getString(label)}\" button") {
+        it.refresh() && it.says(app.getString(label)) && ancestor(it) { node -> node.isClickable }?.isEnabled == true
+    }
+
+    /**
+     * PDF to images or text makes alpha.pdf's text into a text file: the options tell the screen's
+     * button what it makes, the result shows the file with the beginning of its text and no Usugami
+     * watermark, and Copy puts the whole text on the clipboard.
+     */
+    @Test fun pdfToTextShowsTheTextAndCopiesIt() {
+        val activity = launch()
+        val pdfVm = openToolWithAlpha(R.string.tool_pdf_to_images_or_text, activity)
+        relabelledButton(R.string.export_images_action)
+        click(find("the Text choice") { it.says(app.getString(R.string.export_kind_text)) })
+        click(relabelledButton(R.string.export_text_action))
+        find("the heading over a text file") { it.says(app.getString(R.string.result_heading_text_one)) }
+        find("the text file's row") { it.says("alpha.txt") }
+        assertTrue("No watermark switch", nodes().none { it.says(app.getString(R.string.mark_title)) })
+        findBelow("the text in its card") { it.text?.contains("ALPHA ONE") == true }
+        val whole = onMain { pdfVm.result.value!!.single().file.readText() }
+        // Something else on the clipboard first, so that only the copy can put the text there. Read
+        // while Usugami is in front: from Android 10 only the app in front may read the clipboard.
+        val clipboard = onMain { app.getSystemService(ClipboardManager::class.java) }
+        onMain { clipboard.setPrimaryClip(ClipData.newPlainText("test", "Not copied yet")) }
+        click(find("the Copy button") { it.says(app.getString(R.string.copy_text)) })
+        waitUntil("the whole text on the clipboard") { onMain { clipboard.primaryClip?.getItemAt(0)?.text?.toString() } == whole }
     }
 
     /** Set by tests that change the appearance, which outlives the activity (and Usugami, from Android 12). */

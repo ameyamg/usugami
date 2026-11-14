@@ -20,6 +20,7 @@ import io.github.nath_goa.usugami.core.EditLayout
 import io.github.nath_goa.usugami.core.FileNames
 import io.github.nath_goa.usugami.core.InkItem
 import io.github.nath_goa.usugami.core.MarkStyle
+import io.github.nath_goa.usugami.core.OutputType
 import io.github.nath_goa.usugami.core.PageItem
 import io.github.nath_goa.usugami.core.PageNumberPosition
 import io.github.nath_goa.usugami.core.PageNumberSize
@@ -50,7 +51,9 @@ import io.github.nath_goa.usugami.data.PdfPasswordRequired
 import io.github.nath_goa.usugami.data.PdfSaver
 import io.github.nath_goa.usugami.data.PdfToolsEngine
 import io.github.nath_goa.usugami.data.PdfWrongPassword
+import io.github.nath_goa.usugami.data.ReaderFiles
 import io.github.nath_goa.usugami.data.ResultZip
+import io.github.nath_goa.usugami.data.saveCopy
 import io.github.nath_goa.usugami.data.SharedFile
 import io.github.nath_goa.usugami.data.Signature
 import io.github.nath_goa.usugami.data.ToolJob
@@ -91,14 +94,20 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * The PDF tools. Each has a screen at its lowercase name. All but MERGE work on one PDF, except WORD,
  * POWERPOINT, EXCEL and EPUB, which turn one Word, PowerPoint, Excel or EPUB file into a PDF.
- * REORGANIZE works on one PDF and can take pages from others. EDIT puts text, drawings, shapes and
- * pictures on a PDF's pages. REDACT removes what is under its boxes for good. COMPRESS, PAGE_NUMBERS,
+ * REORGANIZE works on one PDF and can take pages from others. REDACT removes what is under its boxes for good. COMPRESS, PAGE_NUMBERS,
  * WATERMARK and FLATTEN also work on several PDFs, and WORD, POWERPOINT, EXCEL and EPUB on several
- * files, one after another, each into a PDF of its own (see [isBatch]).
+ * files, one after another, each into a PDF of its own (see [isBatch]). PDF_TO_IMAGES_OR_TEXT saves a
+ * PDF's pages as images or its text, PAGE_LAYOUT crops pages or puts several on a sheet, and
+ * DOCUMENT_INFO shows and changes a PDF's title, author and the like; each lives in files of its own
+ * (see [ToolAction]). READER opens a PDF to read: its pages in one scroll, text to find, select and
+ * copy, and, in Annotate (Edit PDF until 2.0.0), text, drawings, shapes and pictures put on its pages.
+ * It has a screen of its own (ReaderScreen).
  */
 enum class PdfTool {
-    SPLIT, MERGE, COMPRESS, ROTATE, PAGE_NUMBERS, WATERMARK, SIGN, WORD, POWERPOINT, EPUB,
-    DELETE_PAGES, REORGANIZE, FLATTEN, EDIT, REDACT, EXCEL,
+    SPLIT, MERGE, COMPRESS, PAGE_NUMBERS, WATERMARK, SIGN, WORD, POWERPOINT, EPUB,
+    REORGANIZE, FLATTEN, REDACT, EXCEL,
+    PDF_TO_IMAGES_OR_TEXT, PAGE_LAYOUT, DOCUMENT_INFO,
+    READER,
 }
 
 /**
@@ -131,14 +140,23 @@ data class BatchProgress(val number: Int, val total: Int, val name: String)
 
 class PdfToolsViewModel(private val app: Application, private val handle: SavedStateHandle) : AndroidViewModel(app) {
     // Messages are written here, in the language the user picked (see AppLanguages.localized).
-    private val strings: Resources get() = AppLanguages.localized(app).resources
+    internal val strings: Resources get() = AppLanguages.localized(app).resources
 
-    private val engine = PdfToolsEngine(app)
+    internal val engine = PdfToolsEngine(app)
     private val office = OfficeConverter(app, engine)
     private val saver = PdfSaver(app)
+
+    /** What the tools kept in files of their own keep here, beside the PDFs (see ToolState). */
+    internal val fromPdf = FromPdfState(handle)
+    internal val pageLayout = PageLayoutState(handle)
+    internal val documentInfo = DocumentInfoState(handle)
+    /** The reader's PDF as it shows (see ReaderState): given the view model too, which it uses only once it is built. */
+    internal val reader = ReaderState(this, handle)
+    private val ownStates: List<ToolState> = listOf(fromPdf, pageLayout, documentInfo, reader)
+
     private val pictures = PagePictures(app)
     private val history = EditHistory(handle)
-    private val fileOps = Dispatchers.IO.limitedParallelism(1)
+    internal val fileOps = Dispatchers.IO.limitedParallelism(1)
     private val restored = handle.contains(KEY_INPUTS)
 
     val inputs: StateFlow<List<PdfInput>> = handle.getStateFlow(KEY_INPUTS, ArrayList<PdfInput>())
@@ -150,6 +168,9 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
      */
     private val _pages = MutableStateFlow(restoredPages())
     val pages: StateFlow<List<PdfPageRef>> = _pages.asStateFlow()
+    /** Reorganize PDF's selected pages, by key (see [ChosenPages]). */
+    private val chosen = ChosenPages(handle, _pages.value)
+    val chosenPages: StateFlow<Set<String>> = chosen.keys
     /** Picked PDFs that need a password, in the order they were picked. The dialog asks for the first. */
     val locked: StateFlow<List<PdfInput>> = handle.getStateFlow(KEY_LOCKED, ArrayList<PdfInput>())
 
@@ -188,6 +209,12 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     val redactSelected: StateFlow<Int> = handle.getStateFlow(KEY_REDACT_SELECTED, -1)
 
     /**
+     * The pages (zero-based) of the PDF being redacted with text Find text couldn't read, as its
+     * searches so far found them. Kept until the PDF is put away, in the saved state too.
+     */
+    val redactUnread: StateFlow<IntArray> = handle.getStateFlow(KEY_REDACT_UNREAD, IntArray(0))
+
+    /**
      * What Find text found in the PDF being redacted, as typed: Redact also takes out the form
      * fields that hold it where no page shows them (see [PdfToolsEngine.redact]). Kept until the
      * boxes are all cleared, or the PDF is put away, in the saved state too.
@@ -217,6 +244,10 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private val _convertProgress = MutableStateFlow<OfficeProgress?>(null)
     val convertProgress = _convertProgress.asStateFlow()
 
+    /** How far the job on one PDF has got, when it says (see [reportProgress]); null otherwise. */
+    private val _toolProgress = MutableStateFlow<ToolProgress?>(null)
+    val toolProgress = _toolProgress.asStateFlow()
+
     /**
      * Page lists before the latest changes, newest last, for Undo. Kept in memory only: lists of a
      * long PDF's pages are too big for the saved state, and losing Undo when Android closes
@@ -226,10 +257,10 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private val _canUndo = MutableStateFlow(false)
     val canUndo = _canUndo.asStateFlow()
 
-    /** Edit PDF's items on the PDF's pages, in the order they are drawn (the last on top). */
+    /** What Annotate (the reader) added to the PDF's pages, in the order they are drawn (the last on top). */
     val editItems: StateFlow<List<PageItem>> = history.items
 
-    /** The id of the item chosen in Edit PDF, or null. */
+    /** The id of the item chosen in Annotate (the reader), or null. */
     val editSelected: StateFlow<Long?> = history.selected
     val canUndoEdit = history.canUndo
     val canRedoEdit = history.canRedo
@@ -248,6 +279,10 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     val processing = _processing.asStateFlow()
     private val _importing = MutableStateFlow(false)
     val importing = _importing.asStateFlow()
+
+    /** Whether the reader has a file, or is taking one in: a PDF, one waiting for its password, a document being made into a PDF. */
+    val readerHasFile: Boolean get() = inputs.value.isNotEmpty() || locked.value.isNotEmpty() || documents.value.isNotEmpty() || _importing.value
+
     /** The result's PDFs or a ZIP file of them are being saved, or waiting their turn. */
     private val _saving = MutableStateFlow(false)
     val saving = _saving.asStateFlow()
@@ -271,7 +306,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     /** The names of the result's PDFs saved so far, all at once or each on its own. */
     private val _savedFiles = MutableStateFlow(restoredSavedFiles())
     val savedFiles = _savedFiles.asStateFlow()
-    /** True when the result was made from a PDF opened with a password: the new PDF has none. */
+    /** True when the result, PDFs, was made from a PDF opened with a password: the new PDF has none. */
     private val _passwordRemoved = MutableStateFlow(handle[KEY_PASSWORD_REMOVED] ?: false)
     val passwordRemoved = _passwordRemoved.asStateFlow()
     /**
@@ -297,6 +332,13 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private var resultName: String
         get() = handle[KEY_RESULT_NAME] ?: ""
         set(value) { handle[KEY_RESULT_NAME] = value }
+    /**
+     * What the last run made, as its first file is (PDFs, images or text files), which what is said of
+     * its files follows, also once they have gone; a PDF when nothing (or nothing known) is kept.
+     */
+    private var resultType: OutputType
+        get() = handle.get<String>(KEY_RESULT_TYPE)?.let { name -> OutputType.entries.firstOrNull { it.name == name } } ?: OutputType.PDF
+        set(value) { handle[KEY_RESULT_TYPE] = value.name }
     // A ZIP file is written with the other file work, one at a time: freeing the result's PDFs (see
     // reset) waits for a ZIP file of them being saved, as it does for a save of the PDFs.
     private val zipper = ResultZipper(app, engine.zipDir, viewModelScope, { strings }, ::message, ::resultCleared, io = fileOps)
@@ -343,8 +385,9 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private var runGeneration = 0
 
     init {
-        // Android closed Usugami while it made PDFs, which are gone with it (see process).
-        if (handle.remove<Boolean>(KEY_MAKING) == true) message(strings.getString(R.string.msg_making_interrupted))
+        // Android closed Usugami while it made PDFs, which are gone with it (see process); or images or
+        // a text file, when the run was PDF to images or text's.
+        if (handle.remove<Boolean>(KEY_MAKING) == true) message(strings.getString(if (fromPdf.ranHere) R.string.export_interrupted else R.string.msg_making_interrupted))
         val keep = if (restored) inputs.value + locked.value else emptyList()
         val keepDocuments = documents.value
         val keepPictures = history.items.value.filterIsInstance<PictureItem>().map { it.path }
@@ -364,6 +407,8 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
                 engine.clearOutput(keep = stillThere?.map { it.file }.orEmpty())
                 engine.clearScratch()
                 office.clearWork()
+                // The reader's copies handed to other apps (see ReaderFiles), from an earlier session.
+                ReaderFiles.clear(app)
                 // The copies are in the cache, which the system may have cleared while Usugami was away.
                 keep.filterNot { it.file.isFile } to keepDocuments.filterNot { it.file.isFile }
             }
@@ -597,6 +642,82 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         }
     }
 
+    /**
+     * The reader's document: makes the Word, PowerPoint, Excel or EPUB file opened in it into a PDF
+     * with the converters' own choices (a book on A5 pages, a workbook as its converter lays it out),
+     * and puts that PDF in its place as the reader's PDF: not as a result, since nothing is saved yet,
+     * and not among the results, which the next run empties. Busy as an import is, with
+     * [convertProgress]. Leaving the reader (reset) abandons it, and the converter deletes what it
+     * had made; a document that can't be converted is said with the converters' messages and put away.
+     */
+    fun convertForReader() {
+        val document = documents.value.singleOrNull() ?: return
+        if (_processing.value || _importing.value || inputs.value.isNotEmpty()) return
+        _importing.value = true
+        _convertProgress.value = null
+        val generation = ++importGeneration
+        importJob = viewModelScope.launch {
+            val job = coroutineContext[Job]!!
+            fun abandoned() = generation != importGeneration
+            fun failed(text: String) {
+                if (abandoned()) return
+                message(text)
+                removeDocument(document.id)
+            }
+            try {
+                val id = nextId++
+                val input = withContext(fileOps) {
+                    if (!document.file.isFile) return@withContext null
+                    val made = office.convert(document, "Reading", PageSize.A5, SheetOptions(), { job.ensureActive() }) { _convertProgress.value = it }
+                    // Out of the results' folder, which the next tool run empties, into the tool's own.
+                    engine.adopt(made.file, id, "${FileNames.baseName(document.name)}.pdf")
+                }
+                when {
+                    abandoned() -> input?.let { withContext(NonCancellable + fileOps) { engine.delete(it) } }
+                    // Its copy was cleared from the cache meanwhile.
+                    input == null -> forgetDocuments(listOf(document))
+                    else -> {
+                        // Said before the PDF shows, so that it shows with its note from the start.
+                        reader.converted(input.id, document.name)
+                        removeDocument(document.id)
+                        append(input)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OfficeFileProblem) {
+                failed(officeMessage(e, document.kind))
+            } catch (e: Exception) {
+                failed(
+                    if (e.isOutOfSpace()) strings.getString(R.string.msg_convert_failed, strings.getString(R.string.msg_out_of_space))
+                    else strings.getString(R.string.office_convert_failed),
+                )
+            } catch (_: OutOfMemoryError) {
+                failed(strings.getString(R.string.office_convert_failed))
+            } catch (_: LinkageError) {
+                failed(strings.getString(R.string.office_convert_failed))
+            } catch (_: StackOverflowError) {
+                failed(strings.getString(R.string.office_convert_failed))
+            } finally {
+                if (!abandoned()) {
+                    _importing.value = false
+                    _convertProgress.value = null
+                }
+            }
+        }
+    }
+
+    /**
+     * The reader's "Save as PDF": the PDF made of the document opened becomes a result, named after it
+     * ("Report.pdf"), as its converter's would be, with the Usugami mark when that is on. The reader's
+     * PDF stays, for "Back to editing".
+     */
+    fun runSaveCopy() {
+        val input = inputs.value.singleOrNull() ?: return
+        val name = FileNames.baseName(input.name)
+        process(name, listOf(input)) { check -> listOf(engine.saveCopy(input, name, check)) }
+    }
+
     /** Why a Word, PowerPoint, Excel or EPUB file can't be converted, in the user's language. */
     private fun officeMessage(e: OfficeFileProblem, kind: OfficeKind): String = officeReason(e, kind).one
 
@@ -821,14 +942,15 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     }
 
     /**
-     * Whether leaving [tool] would throw away work done on its PDF: Edit PDF's additions, Redact
-     * PDF's boxes, or pages turned or moved. Merge's pages start as all its PDFs' pages, in order;
-     * the other tools' as the first PDF's (Reorganize PDF's pages added from others count). Not
+     * Whether leaving [tool] would throw away work done on its PDF: the reader's additions (Annotate),
+     * Redact PDF's boxes, what a tool kept in files of its own says it would (see [ToolState]), or pages
+     * turned or moved. Merge's pages start as all its PDFs' pages, in order; the other tools' as the
+     * first PDF's (Reorganize PDF's pages added from others count). Not
      * whether Undo has something: Undo is forgotten when Android closes Usugami in the background,
      * the pages aren't.
      */
     fun hasUnsavedWork(tool: PdfTool): Boolean = when {
-        history.items.value.isNotEmpty() || _redactBoxes.value.isNotEmpty() -> true
+        history.items.value.isNotEmpty() || _redactBoxes.value.isNotEmpty() || ownStates.any { it.hasUnsavedWork } -> true
         // A tool working on several PDFs lists every page of them all, and changes none.
         tool == PdfTool.MERGE || tool.isBatch -> pages.value != allPages()
         else -> pages.value != originalPages()
@@ -842,8 +964,13 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     /** Drops PDFs whose copies the system has cleared from the cache, and says so. */
     private fun forgetInputs(missing: List<PdfInput>) {
         val ids = missing.mapTo(HashSet()) { it.id }
-        // Only with the PDF previewed: Add watermark previews the first of its PDFs.
-        if (inputs.value.firstOrNull()?.id in ids) clearRedaction()
+        // Only with the PDF previewed: Add watermark previews the first of its PDFs. A result showing
+        // keeps its notes (PDF to images or text's): they belong to what was made, not to the PDF.
+        if (inputs.value.firstOrNull()?.id in ids) {
+            val notes = fromPdf.notes.value.takeIf { _result.value != null }
+            clearWork()
+            fromPdf.setNotes(notes)
+        }
         setInputs(inputs.value.filterNot { it.id in ids })
         setPages(pages.value.filterNot { it.inputId in ids })
         setLocked(locked.value.filterNot { it.id in ids })
@@ -854,7 +981,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         val input = inputs.value.firstOrNull { it.id == id } ?: return
         // Only with the PDF previewed, the first: Add watermark keeps the preview of its first PDF, or
         // the one being made, when another of its PDFs is removed.
-        if (inputs.value.first().id == id) clearRedaction()
+        if (inputs.value.first().id == id) clearWork()
         setInputs(inputs.value - input)
         setPages(pages.value.filterNot { it.inputId == id })
         viewModelScope.launch(fileOps) { engine.delete(input) }
@@ -927,17 +1054,42 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         setPages(pages.value.map { if (it.key == ref.key) it.copy(rotation = Math.floorMod(it.rotation + degrees, 360)) else it })
     }
 
-    /** Turns every page by [degrees] more, as Rotate's "all pages" buttons do. */
-    fun rotateAll(degrees: Int) {
-        pushUndo(pages.value)
-        setPages(pages.value.map { it.copy(rotation = Math.floorMod(it.rotation + degrees, 360)) })
-    }
-
     fun removePage(ref: PdfPageRef) {
         if (pages.value.none { it.key == ref.key }) return
         pushUndo(pages.value)
         setPages(pages.value.filterNot { it.key == ref.key })
     }
+
+    /** Makes the pages with [keys] Reorganize PDF's selection. */
+    fun choosePages(keys: Set<String>) = chosen.set(keys, pages.value)
+
+    /** Puts [ref] into the selection, or takes it out: read and written at once, so two pages tapped before the screen redraws are both selected. */
+    fun toggleChosenPage(ref: PdfPageRef) = chosen.keys.value.let { now -> chosen.set(if (ref.key in now) now - ref.key else now + ref.key, pages.value) }
+
+    /** Turns every selected page by [degrees] more, as one change for Undo. */
+    fun rotateChosen(degrees: Int) {
+        val keys = chosen.keys.value
+        if (keys.isEmpty()) return
+        pushUndo(pages.value)
+        setPages(pages.value.map { if (it.key in keys) it.copy(rotation = Math.floorMod(it.rotation + degrees, 360)) else it })
+    }
+
+    /**
+     * Takes the selected pages out, as one change for Undo. Returns false, changing nothing, when
+     * that would leave no page: a PDF keeps at least one. With nothing selected it does nothing.
+     */
+    fun removeChosen(): Boolean {
+        val keys = chosen.keys.value
+        if (keys.isEmpty()) return true
+        val left = pages.value.filterNot { it.key in keys }
+        if (left.isEmpty()) return false
+        pushUndo(pages.value)
+        setPages(left)
+        return true
+    }
+
+    /** Why [text] can't be read as pages of [pageCount], in the user's language; null when it can be, or is blank. */
+    fun pagesProblem(text: String, pageCount: Int): String? = PdfPageSelection.problem(text, pageCount)?.let(::pageSelectionMessage)
 
     fun resetPages() {
         pushUndo(pages.value)
@@ -999,39 +1151,66 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         process(fileName, source) { check -> listOf(engine.merge(source, selected, fileName, check)) }
     }
 
-    fun runCompress(level: PdfCompression, fileName: String) {
+    /**
+     * Compresses the one PDF at [level] into [fileName]. With [gray] (Black and white) its colours are
+     * turned gray too, and the gray PDF is the result once anything was, smaller or not.
+     */
+    fun runCompress(level: PdfCompression, fileName: String, gray: Boolean = false) {
         val input = inputs.value.singleOrNull() ?: return
         // The engine keeps the original file when re-encoding would not make an unprotected PDF
         // smaller. Say so, otherwise the result looks like nothing happened. A PDF with a password
         // can't be kept (no tool's PDF has one), and without it may come out bigger: that is said too.
         // Told of the PDF as it comes out, with the Usugami mark when it is on: the original isn't
         // kept once the mark goes on it, which adds a little too.
+        // With Black and white, a part left in colour is said first (its card also names the pages),
+        // and a PDF made gray that is no smaller says it is gray now, rather than only that it isn't smaller.
         process(fileName, listOf(input), afterResult = { files ->
             val file = files.single()
-            if (!madeSmaller(file)) message(strings.getString(if (file.keptOriginal) R.string.pdf_no_reduction else R.string.pdf_not_smaller))
-        }) { check -> listOf(engine.compress(input, level, fileName, check)) }
+            if (colorLeft(file)) message(strings.getString(R.string.pdf_gray_partial))
+            if (!madeSmaller(file)) {
+                message(strings.getString(when {
+                    file.keptOriginal -> R.string.pdf_no_reduction
+                    madeGray(file) -> R.string.pdf_gray_not_smaller
+                    else -> R.string.pdf_not_smaller
+                }))
+            }
+        }) { check -> listOf(engine.compress(input, level, fileName, check, gray)) }
     }
 
     /** Whether Compress PDF made [file] at least 1% smaller than the PDF it was made of. */
     private fun madeSmaller(file: PdfFile) = Compressor.savedPercent(file.originalBytes, file.sizeBytes) != null
 
+    /** Whether Black and white left some part of [file] in colour, on the pages its outcome names. */
+    private fun colorLeft(file: PdfFile) = file.gray?.colorPages?.isNotEmpty() == true
+
+    /** Whether Black and white turned [file]'s colours gray, all of them. */
+    private fun madeGray(file: PdfFile) = file.gray?.changed == true && !colorLeft(file)
+
     /**
      * Compresses every PDF, each at its own level ([compressionOf]) into a PDF of its own name
-     * ([outputName]), one after another. One PDF is compressed as [runCompress] does.
+     * ([outputName]), one after another, all of them turned gray with [gray] (Black and white). One PDF
+     * is compressed as [runCompress] does.
      */
-    fun runCompressAll() {
+    fun runCompressAll(gray: Boolean = false) {
         val list = inputs.value
         if (list.size <= 1) {
-            list.firstOrNull()?.let { runCompress(compressionOf(it), outputName(PdfTool.COMPRESS, it)) }
+            list.firstOrNull()?.let { runCompress(compressionOf(it), outputName(PdfTool.COMPRESS, it), gray) }
             return
         }
-        val jobs = list.map { CompressJob(it, compressionOf(it), outputName(PdfTool.COMPRESS, it)) }
+        val jobs = list.map { CompressJob(it, compressionOf(it), outputName(PdfTool.COMPRESS, it), gray) }
         // Those not made smaller and not kept as they were, as they come out (see runCompress), by the
-        // name of the PDF each was made of. A PDF kept says so under its name.
+        // name of the PDF each was made of. A PDF kept says so under its name. With Black and white,
+        // first those with parts left in colour, then those made gray that are no smaller.
         val names = HashMap<File, String>()
         processEach("Compressed_PDFs", list.map { it.name }, list, afterResult = { files ->
-            val notSmaller = files.filter { !it.keptOriginal && !madeSmaller(it) }.mapNotNull { names[it.file] }
-            if (notSmaller.isNotEmpty()) message(strings.getQuantityString(R.plurals.batch_not_smaller, notSmaller.size, notSmaller.size, strings.listOfNames(notSmaller)))
+            fun named(@PluralsRes res: Int, of: List<PdfFile>) {
+                val named = of.mapNotNull { names[it.file] }
+                if (named.isNotEmpty()) message(strings.getQuantityString(res, named.size, named.size, strings.listOfNames(named)))
+            }
+            named(R.plurals.batch_gray_partial, files.filter(::colorLeft))
+            val notSmaller = files.filter { !it.keptOriginal && !madeSmaller(it) }
+            named(R.plurals.batch_gray_not_smaller, notSmaller.filter(::madeGray))
+            named(R.plurals.batch_not_smaller, notSmaller.filterNot(::madeGray))
         }) { check, onNext ->
             engine.compressEach(jobs, check, onNext).also { outcomes ->
                 for ((i, outcome) in outcomes.withIndex()) outcome.getOrNull()?.let { names[it.file] = list[i].name }
@@ -1073,14 +1252,6 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         @Suppress("UNCHECKED_CAST")
         val names = kept.getStringArray("names") as Array<String?>?
         return BatchChoices.unpack(kept.getLongArray("ids"), names, kept.getIntArray("choices"), kept.getInt("all", DEFAULT_BATCH_CHOICE))
-    }
-
-    /** Saves the PDF with its pages turned as [pages] says; the button is off until one is turned. */
-    fun runRotate(fileName: String) {
-        val input = inputs.value.singleOrNull() ?: return
-        val rotations = pages.value.filter { it.inputId == input.id && it.rotation != 0 }.associate { it.page to it.rotation }
-        if (rotations.isEmpty()) return
-        process(fileName, listOf(input)) { check -> listOf(engine.rotate(input, rotations, fileName, check)) }
     }
 
     /** [skip] lists pages to leave without a number, like "1" or "1-2,5"; it may be blank. */
@@ -1154,18 +1325,6 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         processEach("Watermarked_PDFs", list.map { it.name }, list) { check, onNext -> engine.addWatermarkEach(jobs, text, color, opacity, check, onNext) }
     }
 
-    /** Saves the PDF without the pages in [text], typed like "2,5-7"; it must leave at least one page. */
-    fun runDeletePages(text: String, fileName: String) {
-        val input = inputs.value.singleOrNull() ?: return
-        val doomed = try {
-            PdfPageSelection.toDelete(text, input.pageCount)
-        } catch (e: PageSelectionException) {
-            message(pageSelectionMessage(e))
-            return
-        }
-        process(fileName, listOf(input)) { check -> listOf(engine.deletePages(input, doomed, fileName, check)) }
-    }
-
     /** Saves the first PDF with the pages as [pages] lists them, from it, from PDFs added and blank. */
     fun runReorganize(fileName: String) {
         val main = inputs.value.firstOrNull() ?: return
@@ -1220,9 +1379,9 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     fun selectEditItem(id: Long?) = history.select(id)
 
     /**
-     * Edit PDF is saving: its items stay as they were when Save was tapped, which the PDF is made
-     * from. The screen is covered meanwhile, but not a dialog or menu opened by a tap in the same
-     * moment, or a finger still drawing or dragging: what they do would be left out of the PDF.
+     * Annotate (the reader) is saving: its items stay as they were when Save PDF was tapped, which the
+     * PDF is made from. The screen is covered meanwhile, but not a dialog or menu opened by a tap in
+     * the same moment, or a finger still drawing or dragging: what they do would be left out of the PDF.
      */
     private val editSaving: Boolean get() = _processing.value
 
@@ -1358,9 +1517,9 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     }
 
     /**
-     * Saves the PDF with Edit PDF's items drawn on its pages. It is busy from the tap, as every tool
-     * is, even while the pictures are looked for: nothing can be added meanwhile that the PDF would
-     * leave out, and leaving the tool stops it.
+     * Saves the PDF with what Annotate (the reader) added drawn on its pages: Save PDF. It is busy from
+     * the tap, as every tool is, even while the pictures are looked for: nothing can be added meanwhile
+     * that the PDF would leave out, and leaving the reader stops it.
      */
     fun runEdit(fileName: String) {
         val input = inputs.value.singleOrNull() ?: return
@@ -1462,7 +1621,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
      * Puts [box] in the place of box [was], at [index] when the change began (a drag, say), wherever
      * it is now: a box before it deleted meanwhile moves it up the list. Once [was] itself has gone,
      * deleted or changed by another finger (a move or size button pressed during a drag), nothing
-     * changes: what the other finger did stays, as in Edit PDF, and the box now in its place isn't
+     * changes: what the other finger did stays, as in Annotate, and the box now in its place isn't
      * replaced.
      */
     fun changeRedactBox(index: Int, was: RedactBox, box: RedactBox) {
@@ -1505,7 +1664,8 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
 
     /**
      * Boxes every place [query] is found, on every page, for the user to check before saving.
-     * Boxes already there aren't added again.
+     * Boxes already there aren't added again. The pages with text it couldn't read are added to
+     * [redactUnread], whatever was found.
      */
     fun findText(query: String) {
         val input = inputs.value.singleOrNull() ?: return
@@ -1515,15 +1675,17 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         findJob = viewModelScope.launch {
             val job = coroutineContext[Job]!!
             try {
-                val matches = withContext(fileOps) {
-                    if (!input.file.isFile) null else engine.findText(input, query, view) { job.ensureActive() }
+                val search = withContext(fileOps) {
+                    if (!input.file.isFile) null else engine.searchText(input, query, view) { job.ensureActive() }
                 }
-                if (matches == null) {
+                if (search == null) {
                     forgetInputs(listOf(input))
                     return@launch
                 }
                 if (inputs.value.singleOrNull()?.id != input.id) return@launch
-                val found = matches.flatten()
+                // The pages belong to the PDF, not to this search: they add up.
+                if (search.unread.isNotEmpty()) handle[KEY_REDACT_UNREAD] = (redactUnread.value.toSet() + search.unread).sorted().toIntArray()
+                val found = search.matches.flatten()
                 val boxes = _redactBoxes.value
                 val new = ArrayList<RedactBox>()
                 for (box in found) if (boxes.none { Redaction.same(it, box) } && new.none { Redaction.same(it, box) }) new += box
@@ -1536,7 +1698,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
                         // Shows a page with matches, unless the one showing has some.
                         val pages = found.mapTo(HashSet()) { it.page }
                         if (redactPage.value !in pages) showRedactPage(found.minOf { it.page }) else handle[KEY_REDACT_SELECTED] = -1
-                        pluralMessage(R.plurals.redact_found, matches.size)
+                        pluralMessage(R.plurals.redact_found, search.matches.size)
                     }
                 }
             } catch (e: CancellationException) {
@@ -1580,18 +1742,24 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         _previewView.value = null
         setRedactBoxes(emptyList())
         redactSearched = emptyList()
+        handle[KEY_REDACT_UNREAD] = IntArray(0)
         handle[KEY_REDACT_PAGE] = 0
         handle[KEY_REDACT_SELECTED] = -1
     }
 
+    /** The work done on the PDF previewed goes with it: Redact PDF's boxes, and what the tools in files of their own keep. */
+    private fun clearWork() {
+        clearRedaction()
+        ownStates.forEach { it.clear() }
+    }
+
     /** Why the page numbers typed can't be used, in the user's language. */
-    private fun pageSelectionMessage(e: PageSelectionException): String = when (e.problem) {
+    internal fun pageSelectionMessage(e: PageSelectionException): String = when (e.problem) {
         PageSelectionException.Problem.FORMAT -> strings.getString(R.string.pdf_pages_format)
         PageSelectionException.Problem.RANGES_FORMAT -> strings.getString(R.string.pdf_ranges_format)
         PageSelectionException.Problem.OUT_OF_RANGE -> strings.getString(R.string.pdf_pages_range, e.pageCount)
         PageSelectionException.Problem.REVERSED -> strings.getString(R.string.pdf_pages_reversed)
         PageSelectionException.Problem.CHUNK_SIZE -> strings.getString(R.string.pdf_pages_chunk, e.pageCount)
-        PageSelectionException.Problem.ALL_PAGES -> strings.getString(R.string.pdf_need_page)
     }
 
     /**
@@ -1662,20 +1830,24 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
 
     /**
      * Runs [block], which reads [sources] (or the Word, PowerPoint, Excel or EPUB files [documents]) and
-     * makes PDFs named after [name]. Every tool writes PDFs without a password.
+     * makes files, PDFs unless the tool says otherwise, named after [name]. Every tool writes PDFs
+     * without a password. [block] runs on the file-work thread and may suspend (text recognition
+     * does); the check it is given throws once the run is cancelled. A block that makes no file shows
+     * no result: [afterResult] then says what it did. A [ToolMessage] it throws is said as it is.
      */
-    private fun process(
+    internal fun process(
         name: String,
         sources: List<PdfInput>,
         documents: List<OfficeInput> = emptyList(),
         afterResult: (List<PdfFile>) -> Unit = {},
-        block: (() -> Unit) -> List<PdfFile>,
+        block: suspend (() -> Unit) -> List<PdfFile>,
     ) {
         if (_processing.value || _importing.value) return
         _processing.value = true
         // In the saved state until the PDFs are made: when Android closes Usugami meanwhile, the user is told.
         handle[KEY_MAKING] = true
         _convertProgress.value = null
+        _toolProgress.value = null
         val document = documents.firstOrNull()
         val generation = ++runGeneration
         task = viewModelScope.launch {
@@ -1702,12 +1874,19 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
                         throw e
                     }
                 }
+                // A job that makes no file (text copied, say) shows no result: afterResult says what it did.
+                if (files.isEmpty()) {
+                    afterResult(files)
+                    return@launch
+                }
                 _saved.value = false
                 resultPutAway = false
                 setSavedFiles(emptySet())
                 handle[KEY_SAVE_AS] = null
-                _passwordRemoved.value = sources.any { it.password.isNotEmpty() }
+                // Said of PDFs only: an image or a text file never had a password.
+                _passwordRemoved.value = sources.any { it.password.isNotEmpty() } && files.all { it.isPdf }
                 resultName = name
+                resultType = files.first().type
                 _result.value = files
                 afterResult(files)
             } catch (_: CancellationException) {
@@ -1727,6 +1906,8 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
                 forgetPictures(e.paths)
             } catch (e: BatchFailed) {
                 reportFailures(e.failures)
+            } catch (e: ToolMessage) {
+                message(e.text)
             } catch (e: Exception) {
                 message(
                     if (e.isOutOfSpace()) strings.getString(R.string.msg_convert_failed, strings.getString(R.string.msg_out_of_space))
@@ -1748,10 +1929,16 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private fun endRun() {
         _processing.value = false
         _convertProgress.value = null
+        _toolProgress.value = null
         _batchProgress.value = null
         _markProgress.value = null
         task = null
         handle.remove<Boolean>(KEY_MAKING)
+    }
+
+    /** A job says how far it has got: [done] of [total] steps, [text] saying so. From any thread. */
+    internal fun reportProgress(done: Int, total: Int, text: String) {
+        _toolProgress.value = ToolProgress(done, total, text)
     }
 
     fun cancel() { task?.cancel() }
@@ -1844,7 +2031,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         setBatch(BatchChoices(all = DEFAULT_BATCH_CHOICE))
         clearUndo()
         history.clear()
-        clearRedaction()
+        clearWork()
         // Every copy goes, including one still being imported or waiting for its password. File work
         // runs one task at a time, so this waits for a cancelled import or run to stop first, and for a
         // save of the result (its PDFs or a ZIP file of them) to finish.
@@ -1881,6 +2068,8 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
             _wrongPassword.value = false
             added.forEach { input -> viewModelScope.launch(fileOps) { engine.delete(input) } }
         }
+        // The PDF stays for the next tool; what the last one selected doesn't.
+        chosen.set(emptySet(), pages.value)
         setPages(allPages())
         handle[KEY_INSERT_AFTER] = null
         handle[KEY_PICTURE_PAGE] = null
@@ -1888,7 +2077,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         clearUndo()
         val hadItems = history.items.value.isNotEmpty()
         history.clear()
-        clearRedaction()
+        clearWork()
         viewModelScope.launch(fileOps) {
             engine.clearOutput()
             // A PDF the abandoned import copied anyway goes with the others once the PDFs are put away.
@@ -1916,7 +2105,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         // What was added belongs to the PDF's pages.
         val hadItems = history.items.value.isNotEmpty()
         history.clear()
-        clearRedaction()
+        clearWork()
         _wrongPassword.value = false
         old.forEach { input -> viewModelScope.launch(fileOps) { engine.delete(input) } }
         oldDocuments.forEach { viewModelScope.launch(fileOps) { office.delete(it) } }
@@ -1939,7 +2128,8 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private fun resultCleared(count: Int) {
         _result.value = null
         marker.stop()
-        message(strings.getQuantityString(R.plurals.msg_result_cleared, count))
+        val cleared = if (resultType == OutputType.PDF) R.plurals.msg_result_cleared else R.plurals.msg_result_files_cleared
+        message(strings.getQuantityString(cleared, count))
     }
 
     fun saveToDownloads() {
@@ -2093,7 +2283,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
                     // The save itself failed (the storage may be full), also when the result was put away meanwhile.
                     pdfsThere -> {
                         partial().takeIf { it.isNotEmpty() }?.let(::markSaved)
-                        message(strings.getString(R.string.msg_save_failed))
+                        message(strings.getString(if (saved.all { it.isPdf }) R.string.msg_save_failed else R.string.msg_save_failed_files))
                     }
                     files != null && files === saving -> resultCleared(files.size)
                     // Otherwise the result was put away and its PDFs have gone: cleared, which was said then.
@@ -2106,6 +2296,9 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
 
     fun shareIntent(files: List<PdfFile>): Intent = saver.shareIntent(files.map { it.file })
     fun viewIntent(file: PdfFile): Intent = saver.viewIntent(file.file)
+
+    /** Opens [file] in an app the user picks among the others, never Usugami (the reader's "Open with another app"). */
+    fun viewElsewhereIntent(file: PdfFile): Intent = saver.viewElsewhereIntent(file.file)
 
     /** The name the ZIP file of the result's PDFs gets, such as "Report_split.zip". */
     fun zipFileName(): String = ResultZip.fileName(resultName)
@@ -2176,15 +2369,17 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
             PdfTool.SPLIT -> FileNames.sanitize(base, "Usugami")
             PdfTool.COMPRESS -> named("_compressed")
             PdfTool.MERGE -> "Merged_PDF"
-            PdfTool.ROTATE -> named("_rotated")
             PdfTool.PAGE_NUMBERS -> named("_numbered")
             PdfTool.WATERMARK -> named("_watermarked")
             PdfTool.SIGN -> named("_signed")
-            PdfTool.DELETE_PAGES -> named("_pages_deleted")
             PdfTool.REORGANIZE -> named("_reorganized")
             PdfTool.FLATTEN -> named("_flattened")
-            PdfTool.EDIT -> named("_edited")
             PdfTool.REDACT -> named("_redacted")
+            // Each image adds its page after this name; the text file is named just this.
+            PdfTool.PDF_TO_IMAGES_OR_TEXT -> FileNames.sanitize(base, "Usugami")
+            PdfTool.PAGE_LAYOUT -> named("_layout")
+            PdfTool.DOCUMENT_INFO -> named("_info")
+            PdfTool.READER -> named("_annotated")
         }
     }
 
@@ -2200,6 +2395,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
 
     private fun setPages(list: List<PdfPageRef>) {
         _pages.value = list
+        chosen.follow(list)
         savePages()
     }
 
@@ -2231,10 +2427,10 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         }
     }
     private fun setLocked(list: List<PdfInput>) { handle[KEY_LOCKED] = ArrayList(list) }
-    private fun message(text: String) {
+    internal fun message(text: String) {
         if (unshown.add(text) && _messages.trySend(text).isFailure) unshown -= text
     }
-    private fun pluralMessage(@PluralsRes res: Int, count: Int) = message(strings.getQuantityString(res, count, count))
+    internal fun pluralMessage(@PluralsRes res: Int, count: Int) = message(strings.getQuantityString(res, count, count))
 
     private var finishing = false
 
@@ -2270,6 +2466,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         const val KEY_SAVE_AS = "save_as"
         const val KEY_PASSWORD_REMOVED = "password_removed"
         const val KEY_RESULT_NAME = "result_name"
+        const val KEY_RESULT_TYPE = "result_type"
         const val KEY_BATCH = "batch"
         const val KEY_TAKING_SHARED = "taking_shared"
         const val KEY_MAKING = "making"
@@ -2281,7 +2478,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         const val MAX_UNDO = 50
 
         /**
-         * Edit PDF's items are kept in the saved state, which must stay well under the size Android
+         * Annotate's items are kept in the saved state, which must stay well under the size Android
          * allows it: at most this many items, with at most this many points in their strokes.
          */
         const val MAX_EDIT_ITEMS = 300
@@ -2290,10 +2487,11 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
         const val KEY_REDACT_PAGE = "redact_page"
         const val KEY_REDACT_SELECTED = "redact_selected"
         const val KEY_REDACT_SEARCHED = "redact_searched"
+        const val KEY_REDACT_UNREAD = "redact_unread"
     }
 }
 
-/** Pictures put on Edit PDF's pages whose copies the system has cleared from the cache. */
+/** Pictures put on pages in Annotate whose copies the system has cleared from the cache. */
 private class PicturesCleared(val paths: List<String>) : Exception()
 
 /** No PDF of a batch could be made: [failures] are the files that failed, by name, and why. */

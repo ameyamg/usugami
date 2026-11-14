@@ -8,27 +8,39 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Parcelable
+import android.print.PrintManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.core.content.IntentCompat
+import androidx.lifecycle.lifecycleScope
+import io.github.nath_goa.usugami.core.ReadFrom
 import io.github.nath_goa.usugami.data.AppLanguages
+import io.github.nath_goa.usugami.data.AppShortcuts
 import io.github.nath_goa.usugami.data.Appearances
+import io.github.nath_goa.usugami.data.PdfPrinting
 import io.github.nath_goa.usugami.ui.MainViewModel
 import io.github.nath_goa.usugami.ui.PdfToolsViewModel
 import io.github.nath_goa.usugami.ui.UsugamiApp
 import io.github.nath_goa.usugami.ui.UsugamiTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import java.io.InputStream
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
     // The same instance UsugamiApp gets from viewModel().
     private val pdfToolsViewModel: PdfToolsViewModel by viewModels()
 
+    // The context Android made for this activity, before the language and appearance picked were put on a copy of it.
+    private var systemContext: Context? = null
+
     // Below Android 13 the language the user picked is applied here, and below Android 12 the
     // appearance (light or dark); newer versions do it themselves.
     override fun attachBaseContext(newBase: Context) {
+        systemContext = newBase
         super.attachBaseContext(Appearances.applied(AppLanguages.localized(newBase)))
     }
 
@@ -43,14 +55,26 @@ class MainActivity : ComponentActivity() {
         // keeps it for Usugami.
         AppLanguages.handOver(this)
         Appearances.handOver(this)
-        // On recreation the shared files were already taken in (and are in the saved state).
-        if (savedInstanceState == null) handleShare(intent)
+        // The launcher shortcuts, labelled in the language picked: published at every creation, so
+        // after the language changes (which recreates the activity) they follow. One at a time, in the
+        // order the activities were created: the labels of the newest win.
+        lifecycleScope.launch(shortcutWork) { AppShortcuts.publish(this@MainActivity) }
+        // On recreation the shared files were already taken in (and are in the saved state), and so
+        // were a file opened and a shortcut used.
+        if (savedInstanceState == null) {
+            handleShare(intent)
+            handleView(intent)
+            handleShortcut(intent)
+        }
         setContent {
             UsugamiTheme(Appearances.forTheme(this)) {
                 UsugamiApp(
                     viewModel,
                     onChooseLanguage = { AppLanguages.choose(this, it) },
                     onChooseAppearance = { Appearances.choose(this, it) },
+                    // Back from a file another app opened returns to that app: Usugami steps behind it.
+                    onLeaveToBack = { moveTaskToBack(true) },
+                    onPrint = ::print,
                 )
             }
         }
@@ -71,7 +95,20 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleShare(intent)
+        handleView(intent)
+        handleShortcut(intent)
     }
+
+    /**
+     * Android's print service as this activity must ask for it. Android prints only for an activity, which
+     * it tells by the context the service was asked through: the copy of the context this activity gets
+     * below Android 13 (see attachBaseContext) doesn't know the activity, and printing would be refused.
+     */
+    private fun printManager(): PrintManager? = systemContext?.getSystemService(PrintManager::class.java)
+
+    /** Opens Android's print screen for the PDF [open] gives, named [name]; false when printing couldn't be started (see PdfPrinting.print). */
+    internal fun print(name: String, open: () -> InputStream): Boolean =
+        PdfPrinting.print(printManager(), name, getString(R.string.print_failed), open)
 
     /**
      * Files shared from a gallery, a file manager or another app: images are added to the current
@@ -97,6 +134,21 @@ class MainActivity : ComponentActivity() {
         viewModel.share(accepted, sharedAs = intent.type, refused = uris.size - accepted.size)
     }
 
+    /** A file another app asks Usugami to open ("Open with"): it opens in the reader (see MainViewModel.open). */
+    private fun handleView(intent: Intent) {
+        if (intent.action != Intent.ACTION_VIEW || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        // As for shares: only content:// addresses, and none of Usugami's own files.
+        val uri = intent.data?.takeIf { it.scheme == ContentResolver.SCHEME_CONTENT && it.authority?.substringAfterLast('@') != "$packageName.files" }
+        viewModel.open(uri, type = intent.type, from = ReadFrom.OUTSIDE)
+    }
+
+    /** A launcher shortcut used (see AppShortcuts): the screen opens its tool (see MainViewModel.shortcut). */
+    private fun handleShortcut(intent: Intent) {
+        // Reopened from the recent apps, the intent is the one Usugami was started with: already acted on.
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        AppShortcuts.targetOf(intent)?.let { viewModel.openShortcut(it.id) }
+    }
+
     private fun sharedUris(intent: Intent): List<Uri>? = when (intent.action) {
         // Below API 34 these extras are not type-checked, so a sender can put anything there.
         // Filter by type instead of trusting the generic signature.
@@ -110,5 +162,10 @@ class MainActivity : ComponentActivity() {
         // Some apps only put the files in ClipData.
         val clip = intent.clipData ?: return null
         (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+    }
+
+    private companion object {
+        /** Shortcuts are published one at a time (see onCreate). */
+        val shortcutWork = Dispatchers.IO.limitedParallelism(1)
     }
 }

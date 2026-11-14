@@ -37,9 +37,11 @@ import com.tom_roush.pdfbox.pdmodel.interactive.form.PDAcroForm
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDCheckBox
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDTextField
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDXFAResource
+import io.github.nath_goa.usugami.data.PdfInput
+import io.github.nath_goa.usugami.data.PdfPageRef
 import java.io.File
 
-// Made-up PDFs for Delete pages, Reorganize PDF and Flatten PDF, built here rather than stored.
+// Made-up PDFs for Reorganize PDF and Flatten PDF, built here rather than stored.
 
 /** The words written on page [index] (zero-based) of [chapters]: "PAGE ONE", "PAGE TWO"... */
 val PAGE_WORDS = listOf("ONE", "TWO", "THREE", "FOUR", "FIVE")
@@ -472,3 +474,41 @@ fun compactPdf(file: File, text: String): File = file.also {
     }
     bitmap.recycle()
 }
+
+/** A font as older CJK PDFs have them: named, not embedded, without a ToUnicode map. [encoding] is a CMap's name. */
+fun cjkFont(encoding: String, ordering: String, supplement: Int, subtype: String = "CIDFontType0", name: String = "Usugami-Test"): COSDictionary {
+    val descriptor = COSDictionary().apply {
+        setItem(COSName.TYPE, COSName.FONT_DESC)
+        setName(COSName.FONT_NAME, name)
+        setInt(COSName.FLAGS, 6)
+        setItem(COSName.FONT_BBOX, COSArray().apply { listOf(0L, -120L, 1000L, 880L).forEach { add(COSInteger.get(it)) } })
+        setInt(COSName.ITALIC_ANGLE, 0)
+        setInt(COSName.ASCENT, 880)
+        setInt(COSName.DESCENT, -120)
+        setInt(COSName.CAP_HEIGHT, 700)
+        setInt(COSName.STEM_V, 80)
+    }
+    val collection = COSDictionary().apply {
+        setString(COSName.REGISTRY, "Adobe")
+        setString(COSName.ORDERING, ordering)
+        setInt(COSName.SUPPLEMENT, supplement)
+    }
+    val descendant = COSDictionary().apply {
+        setItem(COSName.TYPE, COSName.FONT)
+        setName(COSName.SUBTYPE, subtype)
+        setName(COSName.BASE_FONT, name)
+        setItem(COSName.CIDSYSTEMINFO, collection)
+        setItem(COSName.FONT_DESC, descriptor)
+        setInt(COSName.DW, 1000)
+    }
+    return COSDictionary().apply {
+        setItem(COSName.TYPE, COSName.FONT)
+        setItem(COSName.SUBTYPE, COSName.TYPE0)
+        setName(COSName.BASE_FONT, "$name-$encoding")
+        setName(COSName.ENCODING, encoding)
+        setItem(COSName.DESCENDANT_FONTS, COSArray().apply { add(descendant) })
+    }
+}
+
+/** Pages [indexes] (zero-based) of [input], not turned: a page list for PdfToolsEngine.reorganize. */
+fun pagesOf(input: PdfInput, vararg indexes: Int): List<PdfPageRef> = indexes.map { PdfPageRef(input.id, it) }

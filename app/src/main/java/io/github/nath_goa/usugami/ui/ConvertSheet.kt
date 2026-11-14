@@ -1,5 +1,6 @@
 package io.github.nath_goa.usugami.ui
 
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
@@ -65,11 +66,15 @@ import io.github.nath_goa.usugami.data.Edition
 import io.github.nath_goa.usugami.data.OcrLanguage
 import io.github.nath_goa.usugami.data.OcrProblem
 
-/** The last step before converting: one PDF or one per image, the file name, compression and OCR. */
+/**
+ * The last step before converting: one PDF or one per page, the file name, compression and OCR.
+ * [imageCount] images make [pageCount] pages: an ID card's two sides share one.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConvertSheet(
     imageCount: Int,
+    pageCount: Int,
     layout: LayoutSettings,
     initialMerge: Boolean,
     initialCompression: Compression,
@@ -91,7 +96,7 @@ fun ConvertSheet(
     // Text recognition reads the app's language unless the user picked another one for these images.
     val appOcrLanguage = AppLanguage.shownIn(LocalContext.current).ocr
     var ocrLanguage by rememberSaveable { mutableStateOf(initialChoices.ocrLanguage ?: appOcrLanguage) }
-    val oneFile = merge || imageCount == 1
+    val oneFile = merge || pageCount == 1
     val create = { onCreate(merge, name, compression, if (BuildConfig.HAS_OCR && ocrEnabled) ocrLanguage else null) }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
@@ -108,7 +113,7 @@ fun ConvertSheet(
             Spacer(Modifier.height(4.dp))
             Text(summary(imageCount, layout), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            if (imageCount > 1) {
+            if (pageCount > 1) {
                 Spacer(Modifier.height(16.dp))
                 Row(
                     Modifier
@@ -206,22 +211,8 @@ fun ConvertSheet(
                     exit = fadeOut(Motion.medium()) + shrinkVertically(Motion.medium()),
                     label = "ocrLanguage",
                 ) {
-                    Column {
-                        Text(stringResource(R.string.ocr_language), style = MaterialTheme.typography.titleSmall)
-                        Spacer(Modifier.height(8.dp))
-                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                            OcrLanguage.entries.forEachIndexed { index, language ->
-                                SegmentedButton(
-                                    selected = ocrLanguage == language,
-                                    onClick = { ocrLanguage = language },
-                                    shape = SegmentedButtonDefaults.itemShape(index, OcrLanguage.entries.size),
-                                    icon = {},
-                                    contentPadding = SegmentPadding,
-                                    label = { SegmentLabel(stringResource(language.label)) },
-                                )
-                            }
-                        }
-                    }
+                    // Seven languages don't fit a row of buttons: a chip that opens a menu of them.
+                    OcrLanguageChip(selected = ocrLanguage, onSelect = { ocrLanguage = it })
                 }
             }
 
@@ -248,7 +239,7 @@ fun ConvertSheet(
                 ) { single ->
                     Text(
                         if (single) stringResource(R.string.create_pdf)
-                        else pluralStringResource(R.plurals.create_pdfs, imageCount, imageCount),
+                        else pluralStringResource(R.plurals.create_pdfs, pageCount, pageCount),
                     )
                 }
             }
@@ -352,9 +343,12 @@ fun ProgressDialog(progress: Progress, cancelling: Boolean, onCancel: () -> Unit
     )
 }
 
-/** Shown instead of converting when text recognition can't run; the user can turn OCR off and retry. */
+/**
+ * Shown instead of converting when text recognition can't run; the user can turn OCR off and retry,
+ * as its last line, [retry], says (PDF to images or text names its own switch).
+ */
 @Composable
-fun OcrProblemDialog(problem: OcrProblem, onDismiss: () -> Unit) {
+fun OcrProblemDialog(problem: OcrProblem, @StringRes retry: Int = R.string.ocr_problem_retry, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.ocr_problem_title)) },
@@ -375,7 +369,7 @@ fun OcrProblemDialog(problem: OcrProblem, onDismiss: () -> Unit) {
                 // How the standard edition gets text recognition (from Google Play services, where the
                 // other problems come from): no help with an unexpected error.
                 if (problem != OcrProblem.FAILED_TO_START && Edition.current == Edition.STANDARD) Text(stringResource(R.string.ocr_problem_help))
-                Text(stringResource(R.string.ocr_problem_retry))
+                Text(stringResource(retry))
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.ok)) } },
@@ -383,10 +377,13 @@ fun OcrProblemDialog(problem: OcrProblem, onDismiss: () -> Unit) {
 }
 
 /** The name of a text-recognition language, in the app's language. */
-private val OcrLanguage.label: Int
+internal val OcrLanguage.label: Int
     get() = when (this) {
         OcrLanguage.ENGLISH -> R.string.ocr_english
         OcrLanguage.FRENCH -> R.string.ocr_french
         OcrLanguage.SPANISH -> R.string.ocr_spanish
         OcrLanguage.HINDI -> R.string.ocr_hindi
+        OcrLanguage.GERMAN -> R.string.ocr_german
+        OcrLanguage.PORTUGUESE -> R.string.ocr_portuguese
+        OcrLanguage.INDONESIAN -> R.string.ocr_indonesian
     }

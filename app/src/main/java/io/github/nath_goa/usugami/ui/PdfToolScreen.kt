@@ -4,14 +4,11 @@ import android.text.format.Formatter
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.BorderStroke
 import androidx.activity.compose.BackHandler
 import androidx.annotation.PluralsRes
 import androidx.annotation.StringRes
@@ -33,7 +30,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -94,7 +90,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
@@ -134,7 +129,6 @@ fun PdfToolScreen(
     pickSingle: () -> Unit,
     pickMultiple: () -> Unit,
     pickAdd: () -> Unit,
-    pickPicture: () -> Unit,
 ) {
     val inputs by vm.inputs.collectAsStateWithLifecycle()
     val pages by vm.pages.collectAsStateWithLifecycle()
@@ -148,7 +142,6 @@ fun PdfToolScreen(
     val signature by vm.signature.collectAsStateWithLifecycle()
     val documents by vm.documents.collectAsStateWithLifecycle()
     val convertProgress by vm.convertProgress.collectAsStateWithLifecycle()
-    val editItems by vm.editItems.collectAsStateWithLifecycle()
         val redactBoxes by vm.redactBoxes.collectAsStateWithLifecycle()
     val finding by vm.finding.collectAsStateWithLifecycle()
     val previewView by vm.previewView.collectAsStateWithLifecycle()
@@ -160,13 +153,15 @@ fun PdfToolScreen(
     val officeKind = tool.officeKind
     // A tool that also takes several PDFs or documents ([isBatch]) lists them, each with its own name and choices.
     val many = tool.isBatch && (if (officeKind != null) documents.size else inputs.size) > 1
-    // Split's pages belong to the PDF they were chosen in, as Delete pages' do.
+    // Split's pages belong to the PDF they were chosen in.
     var splitMode by rememberSaveable(tool, inputs.firstOrNull()?.id) { mutableStateOf(SplitMode.SELECTED) }
     var pageText by rememberSaveable(tool, inputs.firstOrNull()?.id) { mutableStateOf("") }
     var combine by rememberSaveable(tool) { mutableStateOf(true) }
     var pageMode by rememberSaveable(tool) { mutableStateOf(false) }
     var numberPosition by rememberSaveable(tool) { mutableStateOf(PageNumberPosition.BOTTOM_CENTER) }
     var numberSize by rememberSaveable(tool) { mutableStateOf(PageNumberSize.MEDIUM) }
+    // Compress PDF's Black and white, for one PDF or all: off each time the tool opens.
+    var blackAndWhite by rememberSaveable(tool) { mutableStateOf(false) }
     var skipText by rememberSaveable(tool) { mutableStateOf("") }
     var watermarkText by rememberSaveable(tool) { mutableStateOf("") }
     var watermarkColor by rememberSaveable(tool) { mutableStateOf(WatermarkColor.GRAY) }
@@ -175,9 +170,6 @@ fun PdfToolScreen(
     var signPage by rememberSaveable(tool, inputs.firstOrNull()?.id) { mutableIntStateOf(maxOf(0, (inputs.firstOrNull()?.pageCount ?: 1) - 1)) }
     var signPlacement by rememberSaveable(tool, inputs.firstOrNull()?.id, stateSaver = SignaturePlacementSaver) { mutableStateOf<SignaturePlacement?>(null) }
     var drawingSignature by rememberSaveable(tool) { mutableStateOf(false) }
-    var deleteText by rememberSaveable(tool, inputs.firstOrNull()?.id) { mutableStateOf("") }
-    // Reorganize's chosen page, by its key.
-    var chosenPage by rememberSaveable(tool, inputs.firstOrNull()?.id) { mutableStateOf<String?>(null) }
     // Saving is off until the pages differ from the PDF's own.
     val originalPages = remember(inputs.firstOrNull()) { vm.originalPages() }
     val reorganized = tool == PdfTool.REORGANIZE && inputs.isNotEmpty() && pages.isNotEmpty() && pages != originalPages
@@ -201,34 +193,41 @@ fun PdfToolScreen(
         else -> inputs.firstOrNull()?.id
     }
     var fileName by rememberSaveable(tool, inputKey) { mutableStateOf(vm.defaultName(tool)) }
+    // What the options of a tool kept in a file of its own tell this screen (see ToolAction).
+    // PDF to images or text names its files itself: its name field isn't there even for the one
+    // frame before its options are first drawn and say so.
+    val toolAction = remember(tool) { ToolAction(suffix = if (tool == PdfTool.PDF_TO_IMAGES_OR_TEXT) null else ".pdf") }
+    val toolProgress by vm.toolProgress.collectAsStateWithLifecycle()
     val ready = when (tool) {
         PdfTool.SPLIT -> inputs.size == 1
         PdfTool.COMPRESS, PdfTool.PAGE_NUMBERS, PdfTool.FLATTEN -> inputs.isNotEmpty()
         PdfTool.MERGE -> inputs.size >= 2 && (!pageMode || pages.isNotEmpty())
-        PdfTool.ROTATE -> inputs.size == 1 && pages.any { it.rotation != 0 }
         PdfTool.WATERMARK -> inputs.isNotEmpty() && watermarkText.isNotBlank()
         PdfTool.SIGN -> inputs.size == 1 && signature != null
         PdfTool.WORD, PdfTool.POWERPOINT, PdfTool.EXCEL, PdfTool.EPUB -> documents.isNotEmpty() && documents.all { it.kind == officeKind }
-        PdfTool.DELETE_PAGES -> inputs.size == 1 && deleteText.isNotBlank()
         PdfTool.REORGANIZE -> reorganized
-        PdfTool.EDIT -> inputs.size == 1 && editItems.any { it.page < inputs[0].pageCount }
         PdfTool.REDACT -> inputs.size == 1 && redactBoxes.isNotEmpty() && !finding
+        PdfTool.PDF_TO_IMAGES_OR_TEXT, PdfTool.PAGE_LAYOUT, PdfTool.DOCUMENT_INFO -> inputs.size == 1 && toolAction.ready
+        // The reader has a screen of its own (ReaderScreen); this screen is never shown for it.
+        PdfTool.READER -> false
     }
     val title = tool.title
     val action = when (tool) {
         PdfTool.SPLIT -> R.string.pdf_split_action
         PdfTool.MERGE -> R.string.pdf_merge_action
         PdfTool.COMPRESS -> R.string.pdf_compress_action
-        PdfTool.ROTATE -> R.string.pdf_rotate_action
         PdfTool.PAGE_NUMBERS -> R.string.pdf_page_numbers_action
         PdfTool.WATERMARK -> R.string.pdf_watermark_action
         PdfTool.SIGN -> R.string.pdf_sign_action
         PdfTool.WORD, PdfTool.POWERPOINT, PdfTool.EXCEL, PdfTool.EPUB -> R.string.convert
-        PdfTool.DELETE_PAGES -> R.string.pdf_delete_pages_action
         PdfTool.REORGANIZE -> R.string.pdf_reorganize_action
         PdfTool.FLATTEN -> R.string.pdf_flatten_action
-        PdfTool.EDIT -> R.string.pdf_edit_action
         PdfTool.REDACT -> R.string.pdf_redact_action
+        PdfTool.PDF_TO_IMAGES_OR_TEXT -> R.string.pdf_to_images_or_text_action
+        PdfTool.PAGE_LAYOUT -> R.string.pdf_page_layout_action
+        PdfTool.DOCUMENT_INFO -> R.string.pdf_document_info_action
+        // The reader has a screen of its own (ReaderScreen); this screen is never shown for it.
+        PdfTool.READER -> R.string.pdf_edit_action
     }
     // The pages are drawn from a copy without the password and with annotations drawn in, when the
     // PDF has either: Android's renderer can't open the one and leaves the others out. Add watermark
@@ -259,20 +258,21 @@ fun PdfToolScreen(
                             PdfTool.SPLIT -> vm.runSplit(splitMode, pageText, combine, fileName)
                             PdfTool.MERGE -> vm.runMerge(pageMode, fileName)
                             // Each PDF at its level, into a PDF of its name.
-                            PdfTool.COMPRESS -> vm.runCompressAll()
-                            PdfTool.ROTATE -> vm.runRotate(fileName)
+                            PdfTool.COMPRESS -> vm.runCompressAll(blackAndWhite)
                             // These too, each PDF or document into a PDF of its name.
                             PdfTool.PAGE_NUMBERS -> vm.runPageNumbersAll(numberPosition, numberSize, skipText)
                             PdfTool.WATERMARK -> vm.runWatermarkAll(watermarkText, watermarkColor, watermarkOpacity)
                             PdfTool.SIGN -> vm.runSign(signPage, signPlacement, fileName)
                             PdfTool.WORD, PdfTool.POWERPOINT -> vm.runConvertAll()
-                            PdfTool.DELETE_PAGES -> vm.runDeletePages(deleteText, fileName)
                             PdfTool.REORGANIZE -> vm.runReorganize(fileName)
                             PdfTool.FLATTEN -> vm.runFlattenAll()
-                            PdfTool.EDIT -> vm.runEdit(fileName)
                             PdfTool.EPUB -> vm.runConvertAll(bookPage)
                             PdfTool.EXCEL -> vm.runConvertAll(sheets = sheetOptions)
                             PdfTool.REDACT -> vm.runRedact(fileName)
+                            // What their options told the screen they do.
+                            PdfTool.PDF_TO_IMAGES_OR_TEXT, PdfTool.PAGE_LAYOUT, PdfTool.DOCUMENT_INFO -> toolAction.run(fileName)
+                            // The reader has a screen of its own (ReaderScreen); this screen is never shown for it.
+                            PdfTool.READER -> Unit
                         }
                     },
                     enabled = ready && !importing && !processing,
@@ -283,7 +283,7 @@ fun PdfToolScreen(
                         .padding(horizontal = 20.dp, vertical = 10.dp),
                 ) {
                     val count = if (officeKind != null) documents.size else inputs.size
-                    Text(if (many) pluralStringResource(manyAction(tool), count, count) else stringResource(action))
+                    Text(if (many) pluralStringResource(manyAction(tool), count, count) else toolAction.label ?: stringResource(action))
                 }
             },
             snackbarHost = { SnackbarHost(snackbar) },
@@ -374,7 +374,7 @@ fun PdfToolScreen(
                             }
                         } else if (many) {
                             when (tool) {
-                                PdfTool.COMPRESS -> CompressBatch(inputs, vm, batch, drawn, importing, pickMultiple)
+                                PdfTool.COMPRESS -> CompressBatch(inputs, vm, batch, drawn, importing, pickMultiple, blackAndWhite, onBlackAndWhite = { blackAndWhite = it })
                                 // The same choices for every PDF come first, then each PDF with its name.
                                 PdfTool.PAGE_NUMBERS -> {
                                     PageNumberOptions(
@@ -416,8 +416,10 @@ fun PdfToolScreen(
                             )
                             PdfTool.MERGE -> Unit
                             // Its level is the one for all: a PDF added gets it too.
-                            PdfTool.COMPRESS -> CompressOptions(batch.compressionOf(inputs[0].id), onLevel = { vm.setBatchChoiceForAll(it.ordinal) })
-                            PdfTool.ROTATE -> RotateOptions(shown ?: inputs[0], pages, vm)
+                            PdfTool.COMPRESS -> CompressOptions(
+                                batch.compressionOf(inputs[0].id), onLevel = { vm.setBatchChoiceForAll(it.ordinal) },
+                                blackAndWhite, onBlackAndWhite = { blackAndWhite = it },
+                            )
                             PdfTool.PAGE_NUMBERS -> PageNumberOptions(
                                 numberPosition, onPosition = { numberPosition = it },
                                 numberSize, onSize = { numberSize = it },
@@ -439,34 +441,28 @@ fun PdfToolScreen(
                                 pageSizes = vm::shownPageSizes,
                             )
                             PdfTool.WORD, PdfTool.POWERPOINT, PdfTool.EXCEL, PdfTool.EPUB -> Unit
-                            PdfTool.DELETE_PAGES -> DeletePagesOptions(
-                                shown ?: inputs[0],
-                                deleteText, onText = { deleteText = it },
-                                onTap = { change -> deleteText = change(deleteText) },
-                            )
                             PdfTool.REORGANIZE -> ReorganizeOptions(
                                 inputs, pages, vm, drawn,
                                 changed = reorganized,
                                 importing = importing,
-                                selected = chosenPage,
-                                onSelect = { chosenPage = it },
                                 onAddPdf = { after ->
                                     vm.prepareInsert(after)
                                     pickAdd()
                                 },
                             )
                             PdfTool.FLATTEN -> FlattenOptions()
-                            PdfTool.EDIT -> EditPdfOptions(shown ?: inputs[0], vm, importing, onPickPicture = { page ->
-                                vm.prepareEditPicture(page)
-                                pickPicture()
-                            })
                             PdfTool.REDACT -> RedactOptions(inputs[0], vm)
+                            PdfTool.PDF_TO_IMAGES_OR_TEXT -> FromPdfOptions(inputs[0], drawn(inputs[0]), vm, toolAction)
+                            PdfTool.PAGE_LAYOUT -> PageLayoutOptions(inputs[0], drawn(inputs[0]), vm, toolAction)
+                            PdfTool.DOCUMENT_INFO -> DocumentInfoOptions(inputs[0], drawn(inputs[0]), vm, toolAction)
+                            // The reader has a screen of its own (ReaderScreen); this screen is never shown for it.
+                            PdfTool.READER -> Unit
                         }
                         // A tool for several PDFs keeps each one's name, also while there is only one.
                         if (tool.isBatch) {
                             if (!many) OutputNameField(inputs[0].id, vm.outputName(tool, inputs[0]), onChange = { vm.setBatchName(inputs[0].id, it) })
                         } else {
-                            FileNameField(fileName, onChange = { fileName = it })
+                            toolAction.suffix?.let { FileNameField(fileName, onChange = { fileName = it }, suffix = it) }
                         }
                     }
                 }
@@ -535,7 +531,13 @@ fun PdfToolScreen(
                 onDismissRequest = {},
                 modifier = Modifier.keepScreenOn(),
                 title = { Text(stringResource(if (many) R.string.pdf_working_many else R.string.pdf_working)) },
-                text = { if (many) BatchProgressText(batchProgress) else LinearProgressIndicator(Modifier.fillMaxWidth()) },
+                text = {
+                    when {
+                        many -> BatchProgressText(batchProgress)
+                        toolProgress != null -> ToolProgressText(toolProgress)
+                        else -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                },
                 confirmButton = {},
                 dismissButton = { TextButton(onClick = vm::cancel) { Text(stringResource(R.string.cancel)) } },
             )
@@ -575,8 +577,27 @@ private fun BatchProgressText(progress: BatchProgress?) {
 }
 
 /**
- * Compress PDF with several PDFs: a level for all of them at once, then each PDF with a level and a
- * name of its own (see [BatchList]), and a button to add more.
+ * How far a job on one PDF has got, when it says (see PdfToolsViewModel.reportProgress): a bar that
+ * fills, over the line the job gives ("Page 3 of 40"). Not a live region: a line that changes with
+ * every page would have a screen reader talk without end.
+ */
+@Composable
+private fun ToolProgressText(progress: ToolProgress?) {
+    val fraction by animateFloatAsState(
+        if (progress == null || progress.total <= 0) 0f else (progress.done.toFloat() / progress.total).coerceIn(0f, 1f),
+        Motion.medium(),
+        label = "tool progress",
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+        if (progress != null) Text(progress.text)
+    }
+}
+
+/**
+ * Compress PDF with several PDFs: a level for all of them at once and Black and white ([blackAndWhite])
+ * for all of them, then each PDF with a level and a name of its own (see [BatchList]), and a button to
+ * add more.
  */
 @Composable
 private fun CompressBatch(
@@ -586,6 +607,8 @@ private fun CompressBatch(
     drawn: (PdfInput) -> PdfInput,
     importing: Boolean,
     pickMultiple: () -> Unit,
+    blackAndWhite: Boolean,
+    onBlackAndWhite: (Boolean) -> Unit,
 ) {
     val common = batch.common?.let { PdfCompression.entries.getOrNull(it) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -597,6 +620,8 @@ private fun CompressBatch(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // One switch for all the PDFs: none has one of its own.
+        OptionSwitch(R.string.compress_gray, stringResource(R.string.compress_gray_detail_many), blackAndWhite, onBlackAndWhite)
     }
     PdfBatchList(PdfTool.COMPRESS, inputs, vm, drawn, importing, pickMultiple) { id ->
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -661,15 +686,19 @@ private fun addDocuments(kind: OfficeKind): Int = when (kind) {
 private const val WORKING_DIALOG_DELAY_MS = 400L
 
 /** The tools that draw the PDF's pages for the user to work on. Redact PDF prepares its own. */
-private val PREVIEWED = setOf(PdfTool.SPLIT, PdfTool.ROTATE, PdfTool.WATERMARK, PdfTool.SIGN, PdfTool.DELETE_PAGES, PdfTool.REORGANIZE, PdfTool.EDIT)
+private val PREVIEWED = setOf(
+    PdfTool.SPLIT, PdfTool.WATERMARK, PdfTool.SIGN, PdfTool.REORGANIZE,
+    PdfTool.PDF_TO_IMAGES_OR_TEXT, PdfTool.PAGE_LAYOUT,
+)
 
+/** The name the file made gets, typed; [suffix] is how it ends, shown after it. */
 @Composable
-private fun FileNameField(fileName: String, onChange: (String) -> Unit) {
+internal fun FileNameField(fileName: String, onChange: (String) -> Unit, suffix: String = ".pdf") {
     OutlinedTextField(
         value = fileName,
         onValueChange = onChange,
         label = { Text(stringResource(R.string.file_name)) },
-        suffix = { Text(".pdf") },
+        suffix = { Text(suffix) },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
@@ -915,50 +944,26 @@ private fun SplitOptions(
         AnimatedVisibility(visible = mode == SplitMode.SELECTED, enter = pdfSectionEnter(), exit = pdfSectionExit(), label = "page picker") {
             // In the order typed, which a combined PDF keeps.
             val selected = typedPages(text, input.pageCount).toSet()
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 16.dp).fillMaxWidth()) {
-                items(input.pageCount) { i ->
-                    val active = i in selected
-                    val borderWidth by animateDpAsState(if (active) 2.dp else 1.dp, Motion.short(), label = "page border width")
-                    val borderColor by animateColorAsState(
-                        if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                        Motion.short(),
-                        label = "page border color",
-                    )
-                    val pageLabel = stringResource(R.string.pdf_page_number, i + 1)
-                    OutlinedCard(
-                        // A page tapped goes at the end; the others keep their order, and ranges stay short.
-                        // From the pages chosen now, not as last drawn: two tapped at once are both chosen.
-                        onClick = {
-                            onTap tap@{ current ->
-                                val now = tappedOnto(current, input.pageCount) ?: return@tap current
-                                PdfPageSelection.formatInOrder(if (i in now) now - i else now + i)
-                            }
-                        },
-                        border = BorderStroke(borderWidth, borderColor),
-                        modifier = Modifier.width(105.dp).semantics { this.selected = active },
-                    ) {
-                        PdfThumbnail(input, i, Modifier.fillMaxWidth().height(130.dp))
-                        // A screen reader says "Page 3" rather than a bare "3".
-                        Text(
-                            "${i + 1}",
-                            modifier = Modifier
-                                .align(Alignment.CenterHorizontally)
-                                .semantics { contentDescription = pageLabel }
-                                .padding(6.dp),
-                        )
-                    }
+            // A page tapped goes at the end; the others keep their order, and ranges stay short.
+            // From the pages chosen now, not as last drawn: two tapped at once are both chosen.
+            PageRowPicker(input, selected, Modifier.padding(top = 16.dp).fillMaxWidth()) { i ->
+                onTap tap@{ current ->
+                    val now = tappedOnto(current, input.pageCount) ?: return@tap current
+                    PdfPageSelection.formatInOrder(if (i in now) now - i else now + i)
                 }
             }
         }
     }
 }
 
+/** Compress PDF with one PDF: its level, and Black and white ([blackAndWhite]), which turns its colours gray. */
 @Composable
-private fun CompressOptions(level: PdfCompression, onLevel: (PdfCompression) -> Unit) {
+private fun CompressOptions(level: PdfCompression, onLevel: (PdfCompression) -> Unit, blackAndWhite: Boolean, onBlackAndWhite: (Boolean) -> Unit) {
     Text(stringResource(R.string.compression_title), style = MaterialTheme.typography.titleMedium)
     CompressionLevels(level, onLevel)
     Text(stringResource(R.string.pdf_compress_note), style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
+    OptionSwitch(R.string.compress_gray, stringResource(R.string.compress_gray_detail), blackAndWhite, onBlackAndWhite)
 }
 
 /** Less, Recommended and Extreme, with [level] chosen (none when it is null). */
