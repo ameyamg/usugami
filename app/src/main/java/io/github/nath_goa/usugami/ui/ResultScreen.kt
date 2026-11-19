@@ -3,12 +3,9 @@ package io.github.nath_goa.usugami.ui
 import android.text.format.Formatter
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,7 +33,6 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.automirrored.rounded.TextSnippet
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FolderZip
 import androidx.compose.material.icons.rounded.Image
@@ -44,24 +41,15 @@ import androidx.compose.material.icons.rounded.Print
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.SaveAs
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -73,6 +61,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
+import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -81,10 +71,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import io.github.nath_goa.usugami.R
@@ -95,7 +88,32 @@ import io.github.nath_goa.usugami.core.PdfPageSelection
 import io.github.nath_goa.usugami.core.ZipProgress
 import io.github.nath_goa.usugami.data.MarkSetting
 import io.github.nath_goa.usugami.data.PdfFile
+import io.github.nath_goa.usugami.ui.kit.ButtonGlyph
+import io.github.nath_goa.usugami.ui.kit.ButtonWithGlyphPadding
+import io.github.nath_goa.usugami.ui.kit.DividedColumn
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.Haptics
+import io.github.nath_goa.usugami.ui.kit.LinearProgress
+import io.github.nath_goa.usugami.ui.kit.MenuItem
+import io.github.nath_goa.usugami.ui.kit.PrimaryButton
+import io.github.nath_goa.usugami.ui.kit.QuietButton
+import io.github.nath_goa.usugami.ui.kit.Seal
+import io.github.nath_goa.usugami.ui.kit.Sheet
+import io.github.nath_goa.usugami.ui.kit.SheetRow
+import io.github.nath_goa.usugami.ui.kit.TonalButton
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiDialog
+import io.github.nath_goa.usugami.ui.kit.UsugamiTopBar
+import io.github.nath_goa.usugami.ui.kit.layered
+import io.github.nath_goa.usugami.ui.kit.rememberHaptics
+import io.github.nath_goa.usugami.ui.kit.sheetSlice
+import io.github.nath_goa.usugami.ui.kit.stack
+import io.github.nath_goa.usugami.ui.kit.stackCount
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class ResultActions(
     val back: () -> Unit,
@@ -148,6 +166,9 @@ fun ResultScreen(
     markPreview: MarkPreview? = null,
     /** The beginning of the text file made, shown under it with Copy (see [ResultTextCard]). */
     text: TextPreview? = null,
+    /** Whether this result's arrival has played ([onGreeted] says it has): it plays once per result. */
+    greeted: Boolean = true,
+    onGreeted: () -> Unit = {},
 ) {
     var confirmStartOver by rememberSaveable { mutableStateOf(false) }
     val single = files.size == 1
@@ -155,26 +176,29 @@ fun ResultScreen(
     val kind = files.firstOrNull()?.type ?: OutputType.PDF
     // Nothing else starts while a save, a ZIP file or a change of the mark is under way.
     val idle = !busy && zipProgress == null && !marking
-    // The success check mark grows in once when the result arrives. Saved, so it does not
-    // replay after a rotation.
-    var checkShown by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(Unit) { checkShown = true }
-    val checkScale by animateFloatAsState(
-        targetValue = if (checkShown) 1f else 0.7f,
-        animationSpec = tween(Motion.MEDIUM, delayMillis = Motion.SHORT, easing = Motion.EnterEasing),
-        label = "checkScale",
-    )
-    // The bar takes a tint of its own once the page scrolls under it.
+    // The result arrives once: the headline, the first file with its pages and its seal settle in.
+    // Held here and not in the lazy items, which are dropped when they scroll away. [greeted] is read
+    // only now: it turns true a moment later, once the arrival has begun.
+    val play = remember { !greeted }
+    val arrival = remember { Arrival(play) }
+    val haptics = rememberHaptics()
+    LaunchedEffect(Unit) {
+        if (play) {
+            onGreeted()
+            arrival.play(haptics)
+        }
+    }
+    // A hairline shows under the bar once the page scrolls under it.
     val barScroll = TopAppBarDefaults.pinnedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(barScroll.nestedScrollConnection),
         topBar = {
-            TopAppBar(
+            UsugamiTopBar(
                 scrollBehavior = barScroll,
                 title = { BarTitle(stringResource(R.string.result_title)) },
                 navigationIcon = {
                     // Not while saving: leaving and converting again would replace the files being saved.
-                    IconButton(onClick = actions.back, enabled = !busy) {
+                    GlyphButton(onClick = actions.back, enabled = !busy) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back_to_editing))
                     }
                 },
@@ -191,86 +215,106 @@ fun ResultScreen(
         // doesn't grow with the files.
         val saveMenu = rememberSaveable { mutableStateOf<String?>(null) }
         val wide = Modifier.widthIn(max = 480.dp).fillMaxWidth()
+        // It changes the PDFs, so it comes with them. Only with a PDF to put it on (an empty list is a
+        // screen sliding away before it had files: it keeps the card).
+        val withMark = files.isEmpty() || files.any { it.isPdf }
+        val markCard: @Composable (Modifier) -> Unit = { modifier ->
+            MarkCard(
+                setting = mark,
+                working = marking,
+                // Not while the PDFs, or a ZIP file of them, are being saved.
+                enabled = !busy && zipProgress == null,
+                preview = markPreview,
+                onOn = actions.setMark,
+                onStyle = actions.setMarkStyle,
+                modifier = modifier,
+            )
+        }
         LazyColumn(
             Modifier
                 .padding(padding)
                 .fillMaxSize(),
             contentPadding = PaddingValues(
-                start = bars.calculateStartPadding(direction) + 24.dp,
-                top = bars.calculateTopPadding() + 16.dp,
-                end = bars.calculateEndPadding(direction) + 24.dp,
+                start = bars.calculateStartPadding(direction) + 16.dp,
+                top = bars.calculateTopPadding() + 8.dp,
+                end = bars.calculateEndPadding(direction) + 16.dp,
                 bottom = bars.calculateBottomPadding() + 16.dp,
             ),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             item(key = "heading") {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Rounded.CheckCircle,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .size(64.dp)
-                            .graphicsLayer {
-                                scaleX = checkScale
-                                scaleY = checkScale
-                            },
-                    )
-                    Spacer(Modifier.height(12.dp))
+                Column(wide) {
                     Text(
                         stringResource(resultHeading(kind, single)),
-                        style = MaterialTheme.typography.headlineSmall,
-                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.displaySmall,
+                        // A text is a node of its own already, so its layer adds none.
+                        modifier = Modifier.padding(start = 8.dp, top = 8.dp, end = 8.dp).graphicsLayer(arrival.headline),
                     )
-                    Spacer(Modifier.height(20.dp))
+                    // Room for the sheets under the first file and for its seal, which rise above it.
+                    Spacer(Modifier.height(28.dp))
                 }
             }
-            // Near the top, above the PDFs and what can be done with them: it changes them. Only with
-            // a PDF to put it on (an empty list is a screen sliding away before it had files: it keeps
-            // the card).
-            if (files.isEmpty() || files.any { it.isPdf }) {
-                item(key = "mark") {
-                    MarkCard(
-                        setting = mark,
-                        working = marking,
-                        // Not while the PDFs, or a ZIP file of them, are being saved.
-                        enabled = !busy && zipProgress == null,
-                        preview = markPreview,
-                        onOn = actions.setMark,
-                        onStyle = actions.setMarkStyle,
-                        modifier = wide.padding(bottom = 12.dp),
-                    )
-                }
+            // With several files, above them: there can be thousands, and it must stay in reach.
+            if (withMark && !single) {
+                item(key = "mark") { markCard(wide.padding(bottom = 28.dp)) }
             }
             itemsIndexed(files, key = { _, file -> file.file.path }) { index, file ->
                 val saveAs = actions.saveOneAs
-                Box(if (index > 0) wide.padding(top = 8.dp) else wide) {
-                    if (!single && saveAs != null) {
-                        OwnFileRow(
-                            file,
-                            saved = file.name in savedFiles,
-                            onOpen = { actions.open(file) },
-                            onShare = actions.shareOne?.let { share -> { share(file) } },
-                            onSaveToDownloads = actions.saveOneToDownloads?.let { save -> { save(file) } },
-                            onSaveAs = { saveAs(file) },
-                            onPrint = actions.print?.takeIf { file.isPdf }?.let { print -> { print(file) } },
-                            saveMenu = saveMenu,
-                            canOpen = !marking,
-                            canShare = zipProgress == null && !marking,
-                            canSave = idle,
-                            // Reading the PDF doesn't disturb a save; it is never read while the mark rewrites it.
-                            canPrint = !marking,
-                        )
+                val first = index == 0
+                val onPrint = actions.print?.takeIf { file.isPdf }?.let { print -> { print(file) } }
+                // The first file arrives with its pages and its seal. Its box is no node, and its layer
+                // makes none.
+                Box(if (first) wide.layered(arrival.sheet) else wide) {
+                    if (single) {
+                        // The file on top of its pages.
+                        Sheet(
+                            Modifier
+                                .fillMaxWidth()
+                                .stack(if (file.isPdf) stackCount(file.pageCount) else 0, fan = arrival.fan),
+                            color = Usugami.colors.sheetTop,
+                        ) {
+                            FileRow(file, showOpen = false, canOpen = !marking, onOpen = { actions.open(file) }, onPrint = onPrint, sealed = true)
+                        }
                     } else {
-                        FileRow(
-                            file,
-                            showOpen = !single,
-                            canOpen = !marking,
-                            onOpen = { actions.open(file) },
-                            onPrint = actions.print?.takeIf { file.isPdf }?.let { print -> { print(file) } },
-                        )
+                        // Rows of one sheet, the first on top of the others' pages. Each keeps the node
+                        // its card was.
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .stack(if (first) 2 else 0, fan = arrival.fan)
+                                .sheetSlice(index, files.size, color = Usugami.colors.sheetTop)
+                                .semantics { isTraversalGroup = true },
+                        ) {
+                            if (saveAs != null) {
+                                OwnFileRow(
+                                    file,
+                                    saved = file.name in savedFiles,
+                                    sealed = first,
+                                    onOpen = { actions.open(file) },
+                                    onShare = actions.shareOne?.let { share -> { share(file) } },
+                                    onSaveToDownloads = actions.saveOneToDownloads?.let { save -> { save(file) } },
+                                    onSaveAs = { saveAs(file) },
+                                    onPrint = onPrint,
+                                    saveMenu = saveMenu,
+                                    canOpen = !marking,
+                                    canShare = zipProgress == null && !marking,
+                                    canSave = idle,
+                                    // Reading the PDF doesn't disturb a save; it is never read while the mark rewrites it.
+                                    canPrint = !marking,
+                                )
+                            } else {
+                                FileRow(file, showOpen = true, canOpen = !marking, onOpen = { actions.open(file) }, onPrint = onPrint, sealed = first)
+                            }
+                        }
+                    }
+                    if (first) {
+                        // Across the top edge at the end, outside the row's contents.
+                        Seal(Modifier.align(Alignment.TopEnd).offset(x = (-16).dp, y = (-22).dp).layered(arrival.seal), check = arrival.check)
                     }
                 }
+            }
+            if (withMark && single) {
+                item(key = "mark") { markCard(wide.padding(top = 12.dp)) }
             }
             if (text != null) {
                 item(key = "text") {
@@ -278,69 +322,82 @@ fun ResultScreen(
                 }
             }
             item(key = "actions") {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(wide) {
                     if (note != null) {
-                        Spacer(Modifier.height(12.dp))
                         Text(
                             note,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(start = 8.dp, top = 12.dp, end = 8.dp),
                         )
-                    }
-
-                    Spacer(Modifier.height(24.dp))
-                    Column(wide, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (single) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                WideButton(Icons.AutoMirrored.Rounded.OpenInNew, stringResource(R.string.open), Modifier.weight(1f), primary = true, enabled = !marking, halfWidth = true) {
-                                    actions.open(files[0])
-                                }
-                                WideButton(Icons.Rounded.Share, stringResource(R.string.share), Modifier.weight(1f), tonal = true, enabled = !marking, halfWidth = true, onClick = actions.share)
-                            }
-                        } else {
-                            WideButton(Icons.Rounded.Share, stringResource(R.string.share_all), Modifier.fillMaxWidth(), primary = true, enabled = zipProgress == null && !marking, onClick = actions.share)
-                        }
-                        actions.saveToDownloads?.let { save ->
-                            WideButton(Icons.Rounded.Download, stringResource(R.string.save_to_downloads), Modifier.fillMaxWidth(), enabled = idle, onClick = save)
-                        }
-                        WideButton(
-                            Icons.Rounded.SaveAs,
-                            stringResource(if (single) R.string.save_as else R.string.save_all_to_folder),
-                            Modifier.fillMaxWidth(),
-                            enabled = idle,
-                            onClick = actions.saveAs,
-                        )
-                        // Under "Save as…", across the screen: a third button beside Open and Share wouldn't fit longer languages.
-                        if (single) {
-                            actions.print?.takeIf { files[0].isPdf }?.let { print ->
-                                WideButton(Icons.Rounded.Print, stringResource(R.string.print), Modifier.fillMaxWidth(), enabled = !marking) { print(files[0]) }
-                            }
-                        }
-                        if (!single) ZipButton(enabled = idle, onShare = actions.shareZip, onSave = actions.saveZip)
-                    }
-
-                    AnimatedVisibility(
-                        visible = !saved,
-                        enter = fadeIn(Motion.medium()) + expandVertically(Motion.medium()),
-                        exit = fadeOut(Motion.medium()) + shrinkVertically(Motion.medium()),
-                        label = "notSavedNote",
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Spacer(Modifier.height(16.dp))
-                            Text(
-                                stringResource(R.string.not_saved_note),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                            )
-                        }
                     }
                     Spacer(Modifier.height(16.dp))
+                    if (single) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            PrimaryButton(onClick = { actions.open(files[0]) }, modifier = Modifier.weight(1f), enabled = !marking, contentPadding = ButtonWithGlyphPadding) {
+                                ButtonGlyph(Icons.AutoMirrored.Rounded.OpenInNew)
+                                HalfWidthLabel(stringResource(R.string.open))
+                            }
+                            TonalButton(onClick = actions.share, modifier = Modifier.weight(1f), enabled = !marking, contentPadding = ButtonWithGlyphPadding) {
+                                ButtonGlyph(Icons.Rounded.Share)
+                                HalfWidthLabel(stringResource(R.string.share))
+                            }
+                        }
+                    } else {
+                        PrimaryButton(
+                            onClick = actions.share,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = zipProgress == null && !marking,
+                            contentPadding = ButtonWithGlyphPadding,
+                        ) {
+                            ButtonGlyph(Icons.Rounded.Share)
+                            // Across the screen, a long label takes a second line.
+                            Text(stringResource(R.string.share_all), maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // Where 2.0.1 had buttons on the ground: a sheet drawn round their rows, no node of its own.
+                    Sheet(Modifier.fillMaxWidth(), group = false) {
+                        DividedColumn {
+                            actions.saveToDownloads?.let { save ->
+                                ActionRow(Icons.Rounded.Download, stringResource(R.string.save_to_downloads), enabled = idle, onClick = save)
+                            }
+                            ActionRow(
+                                Icons.Rounded.SaveAs,
+                                stringResource(if (single) R.string.save_as else R.string.save_all_to_folder),
+                                enabled = idle,
+                                onClick = actions.saveAs,
+                            )
+                            // A row of its own: a third button beside Open and Share wouldn't fit longer languages.
+                            if (single) {
+                                actions.print?.takeIf { files[0].isPdf }?.let { print ->
+                                    ActionRow(Icons.Rounded.Print, stringResource(R.string.print), enabled = !marking) { print(files[0]) }
+                                }
+                            }
+                            if (!single) ZipRow(enabled = idle, onShare = actions.shareZip, onSave = actions.saveZip)
+                        }
+                    }
+                    AnimatedVisibility(
+                        visible = !saved,
+                        enter = Motion.sectionEnter(),
+                        exit = Motion.sectionExit(),
+                        label = "notSavedNote",
+                    ) {
+                        Text(
+                            stringResource(R.string.not_saved_note),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 8.dp, top = 12.dp, end = 8.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
                     // Not while saving: starting over deletes the files being saved.
-                    TextButton(onClick = { if (saved) actions.startOver() else confirmStartOver = true }, enabled = !busy) {
-                        Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
+                    QuietButton(
+                        onClick = { if (saved) actions.startOver() else confirmStartOver = true },
+                        enabled = !busy,
+                        contentPadding = ButtonWithGlyphPadding,
+                    ) {
+                        ButtonGlyph(Icons.Rounded.RestartAlt)
                         Text(stringResource(R.string.start_over))
                     }
                 }
@@ -349,30 +406,30 @@ fun ResultScreen(
     }
 
     if (confirmStartOver) {
-        AlertDialog(
+        UsugamiDialog(
             onDismissRequest = { confirmStartOver = false },
             title = { Text(stringResource(R.string.start_over_title)) },
             text = { Text(stringResource(R.string.not_saved_note)) },
             confirmButton = {
-                TextButton(onClick = {
+                QuietButton(danger = true, onClick = {
                     confirmStartOver = false
                     actions.startOver()
                 }) { Text(stringResource(R.string.start_over)) }
             },
-            dismissButton = { TextButton(onClick = { confirmStartOver = false }) { Text(stringResource(R.string.cancel)) } },
+            dismissButton = { QuietButton(onClick = { confirmStartOver = false }) { Text(stringResource(R.string.cancel)) } },
         )
     }
 }
 
-/** "Share or save as ZIP": a menu with the two ways, under the button. */
+/** "Share or save as ZIP": a menu with the two ways, under the row. */
 @Composable
-private fun ZipButton(enabled: Boolean, onShare: () -> Unit, onSave: () -> Unit) {
+private fun ZipRow(enabled: Boolean, onShare: () -> Unit, onSave: () -> Unit) {
     var menu by rememberSaveable { mutableStateOf(false) }
     Box(Modifier.fillMaxWidth()) {
-        WideButton(Icons.Rounded.FolderZip, stringResource(R.string.zip_button), Modifier.fillMaxWidth(), enabled = enabled) { menu = true }
+        ActionRow(Icons.Rounded.FolderZip, stringResource(R.string.zip_button), enabled = enabled) { menu = true }
         // The items can still be tapped while the menu fades out: only the first tap counts.
         DropdownMenu(expanded = menu && enabled, onDismissRequest = { menu = false }) {
-            DropdownMenuItem(
+            MenuItem(
                 text = { Text(stringResource(R.string.zip_share)) },
                 leadingIcon = { Icon(Icons.Rounded.Share, contentDescription = null) },
                 onClick = {
@@ -382,7 +439,7 @@ private fun ZipButton(enabled: Boolean, onShare: () -> Unit, onSave: () -> Unit)
                     }
                 },
             )
-            DropdownMenuItem(
+            MenuItem(
                 text = { Text(stringResource(R.string.zip_save)) },
                 leadingIcon = { Icon(Icons.Rounded.SaveAs, contentDescription = null) },
                 onClick = {
@@ -418,7 +475,7 @@ fun ZipProgressDialog(progress: ZipProgress?, onCancel: () -> Unit) {
 @Composable
 private fun ZipDialog(progress: ZipProgress, onCancel: () -> Unit) {
     val fraction by animateFloatAsState(targetValue = progress.fraction, animationSpec = Motion.medium(), label = "zip progress")
-    AlertDialog(
+    UsugamiDialog(
         onDismissRequest = {},
         // The screen stays on while it shows, as for every job (see ProgressDialog).
         modifier = Modifier.keepScreenOn(),
@@ -426,12 +483,12 @@ private fun ZipDialog(progress: ZipProgress, onCancel: () -> Unit) {
         title = { Text(stringResource(R.string.zip_making)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-                Text(pluralStringResource(R.plurals.progress_files, progress.totalFiles, progress.files, progress.totalFiles))
+                LinearProgress(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                Text(pluralStringResource(R.plurals.progress_files, progress.totalFiles, progress.files, progress.totalFiles), style = Usugami.type.tabular(LocalTextStyle.current))
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onCancel) { Text(stringResource(R.string.cancel)) } },
+        dismissButton = { QuietButton(onClick = onCancel) { Text(stringResource(R.string.cancel)) } },
     )
 }
 
@@ -445,6 +502,95 @@ private fun resultHeading(kind: OutputType, single: Boolean): Int = when (kind) 
     OutputType.TEXT -> if (single) R.string.result_heading_text_one else R.string.result_heading_text_many
 }
 
+/**
+ * A result's arrival, in about 0.7 s: the headline rises into place, the first file comes down onto
+ * its place, its pages fan out under it one after the other, and the seal lands on it and is felt,
+ * its tick drawn last. Only these move, in layers and while drawing: every control is in its place
+ * and live from the first frame, for a screen reader and the device tests too. Made at rest when it
+ * has played already ([play] false). Each part runs from 0 (where it starts) to 1 (at rest).
+ */
+private class Arrival(play: Boolean) {
+    private val start = if (play) 0f else 1f
+    private val headlineIn = Animatable(start)
+    private val headlineUp = Animatable(start)
+    private val sheetIn = Animatable(start)
+    private val sheetDown = Animatable(start)
+    private val fans = List(2) { Animatable(start) }
+    private val sealIn = Animatable(start)
+    private val sealDown = Animatable(start)
+    private val tick = Animatable(start)
+
+    /** The headline's layer: it comes up 8 dp as it fades in. */
+    val headline: GraphicsLayerScope.() -> Unit = {
+        alpha = headlineIn.value
+        translationY = (1f - headlineUp.value) * 8.dp.toPx()
+    }
+
+    /** The first file's layer: it comes down 20 dp from a little larger as it fades in. */
+    val sheet: GraphicsLayerScope.() -> Unit = {
+        val away = 1f - sheetDown.value
+        alpha = sheetIn.value
+        translationY = -away * 20.dp.toPx()
+        scaleX = 1f + 0.03f * away
+        scaleY = scaleX
+    }
+
+    /** The seal's layer: it lands from 1.6 times its size. */
+    val seal: GraphicsLayerScope.() -> Unit = {
+        alpha = sealIn.value
+        scaleX = 1f + 0.6f * (1f - sealDown.value)
+        scaleY = scaleX
+    }
+
+    /** How far each sheet under the first file has fanned out. */
+    val fan: (Int) -> Float = { index -> fans[index].value }
+
+    /** How much of the seal's tick is drawn. */
+    val check: () -> Float = { tick.value }
+
+    /** Plays it all, timed from now, and has the seal felt as it lands. */
+    suspend fun play(haptics: Haptics) {
+        // With Android's "Remove animations" it is all there at once, and the seal is still felt.
+        if (currentCoroutineContext()[MotionDurationScale]?.scaleFactor == 0f) {
+            for (part in listOf(headlineIn, headlineUp, sheetIn, sheetDown, sealIn, sealDown, tick) + fans) part.snapTo(1f)
+            haptics.confirm()
+            return
+        }
+        coroutineScope { playTimed(haptics) }
+    }
+
+    private fun CoroutineScope.playTimed(haptics: Haptics) {
+        launch {
+            delay(120)
+            launch { headlineIn.animateTo(1f, Motion.appear()) }
+            headlineUp.animateTo(1f, Motion.move(0.001f))
+        }
+        launch {
+            delay(180)
+            launch { sheetIn.animateTo(1f, tween(100)) }
+            sheetDown.animateTo(1f, Motion.settle(0.001f))
+        }
+        launch {
+            delay(260)
+            fans[0].animateTo(1f, Motion.settle(0.001f))
+        }
+        launch {
+            delay(320)
+            fans[1].animateTo(1f, Motion.settle(0.001f))
+        }
+        launch {
+            delay(520)
+            sealIn.snapTo(1f)
+            sealDown.animateTo(1f, Motion.press(0.001f))
+            haptics.confirm()
+        }
+        launch {
+            delay(560)
+            tick.animateTo(1f, tween(160))
+        }
+    }
+}
+
 /** The icon a file of this type shows beside its name: a PDF, an image or a text file. */
 internal val OutputType.icon: ImageVector
     get() = when (this) {
@@ -455,31 +601,51 @@ internal val OutputType.icon: ImageVector
 
 /**
  * A file of the result, with its own Open (and Print, for a PDF on a phone that prints) when there are
- * several ([showOpen]); a single file has the wide buttons under it instead.
+ * several ([showOpen]); a single file has the wide buttons under it instead. [sealed] on the row the
+ * seal lies over.
  */
 @Composable
-private fun FileRow(file: PdfFile, showOpen: Boolean, canOpen: Boolean, onOpen: () -> Unit, onPrint: (() -> Unit)?) {
-    OutlinedCard(Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(file.type.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
-            Spacer(Modifier.width(12.dp))
-            FileDetails(file, Modifier.weight(1f))
-            if (showOpen) {
-                IconButton(onClick = onOpen, enabled = canOpen) {
-                    // One per file, so the label names the file.
-                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = stringResource(R.string.open_file, file.name))
+private fun FileRow(file: PdfFile, showOpen: Boolean, canOpen: Boolean, onOpen: () -> Unit, onPrint: (() -> Unit)?, sealed: Boolean) {
+    Row(
+        // The seal reaches 22 dp down into the sealed row, so its buttons start below it.
+        if (showOpen) Modifier.padding(start = 16.dp, top = if (sealed) 22.dp else 12.dp, bottom = 12.dp, end = 4.dp) else Modifier.padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FileIcon(file)
+        // With buttons at the end of the row, the seal lies above them rather than over the details.
+        val after = if (showOpen) 4.dp + 48.dp * (if (onPrint != null) 2 else 1) else 16.dp
+        FileDetails(file, Modifier.weight(1f).clearOfSeal(sealed, after))
+        if (showOpen) {
+            GlyphButton(onClick = onOpen, enabled = canOpen) {
+                // One per file, so the label names the file.
+                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = stringResource(R.string.open_file, file.name))
+            }
+            if (onPrint != null) {
+                GlyphButton(onClick = onPrint, enabled = canOpen) {
+                    Icon(Icons.Rounded.Print, contentDescription = stringResource(R.string.print_file, file.name))
                 }
-                if (onPrint != null) {
-                    IconButton(onClick = onPrint, enabled = canOpen) {
-                        Icon(Icons.Rounded.Print, contentDescription = stringResource(R.string.print_file, file.name))
-                    }
-                }
-            } else {
-                Spacer(Modifier.width(12.dp))
             }
         }
     }
 }
+
+/** The type of [file] at the start of its row, then the gap before its name. */
+@Composable
+private fun FileIcon(file: PdfFile) {
+    Icon(file.type.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+    Spacer(Modifier.width(16.dp))
+}
+
+/**
+ * Keeps a row's details from under the seal, which lies across the sheet's top edge 16 dp from its end
+ * ([SealRoom] in all): [after] is what lies between the details and that end, the row's padding and
+ * any buttons.
+ */
+private fun Modifier.clearOfSeal(sealed: Boolean, after: Dp = 16.dp) =
+    if (sealed) padding(end = (SealRoom - after).coerceAtLeast(0.dp)) else this
+
+/** From the sheet's end edge to the far side of its seal: 16 + 44. */
+private val SealRoom = 60.dp
 
 /**
  * [file]'s name, its pages (for a PDF) and size, and how much smaller it was made, or that its
@@ -499,10 +665,10 @@ private fun FileDetails(file: PdfFile, modifier: Modifier = Modifier, saved: Boo
         size
     }
     Column(modifier) {
-        Text(file.name, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(file.name, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text(
             details,
-            style = MaterialTheme.typography.bodySmall,
+            style = Usugami.type.tabular(MaterialTheme.typography.bodySmall),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         val percent = Compressor.savedPercent(file.originalBytes, sizeBytes)
@@ -529,7 +695,7 @@ private fun FileDetails(file: PdfFile, modifier: Modifier = Modifier, saved: Boo
                 color = MaterialTheme.colorScheme.error,
             )
         }
-        AnimatedVisibility(visible = saved, enter = fadeIn(Motion.medium()) + expandVertically(Motion.medium()), label = "saved mark") {
+        AnimatedVisibility(visible = saved, enter = Motion.sectionEnter(), label = "saved mark") {
             Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
@@ -549,6 +715,7 @@ private fun FileDetails(file: PdfFile, modifier: Modifier = Modifier, saved: Boo
 private fun OwnFileRow(
     file: PdfFile,
     saved: Boolean,
+    sealed: Boolean,
     onOpen: () -> Unit,
     onShare: (() -> Unit)?,
     onSaveToDownloads: (() -> Unit)?,
@@ -560,69 +727,66 @@ private fun OwnFileRow(
     canSave: Boolean,
     canPrint: Boolean,
 ) {
-    OutlinedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(top = 12.dp, bottom = 4.dp, end = 8.dp)) {
-            Row(Modifier.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(file.type.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
-                Spacer(Modifier.width(12.dp))
-                FileDetails(file, Modifier.weight(1f), saved = saved)
+    Column {
+        Row(Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            FileIcon(file)
+            FileDetails(file, Modifier.weight(1f).clearOfSeal(sealed), saved = saved)
+        }
+        // Under the details and across the sheet, so a long name, a long translation or a large font
+        // size wraps the buttons onto another line instead of squeezing the name, and the four fit on
+        // one line on most phones. Each names its file for a screen reader.
+        val openLabel = stringResource(R.string.open_file, file.name)
+        val shareLabel = stringResource(R.string.share_file, file.name)
+        val saveLabel = stringResource(R.string.save_file, file.name)
+        val printLabel = stringResource(R.string.print_file, file.name)
+        FlowRow(Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp)) {
+            QuietButton(onClick = onOpen, enabled = canOpen, contentPadding = RowButtonPadding, modifier = Modifier.semantics { contentDescription = openLabel }) {
+                RowButtonContent(Icons.AutoMirrored.Rounded.OpenInNew, stringResource(R.string.open))
             }
-            // Under the details, so a long name, a long translation or a large font size wraps the
-            // buttons onto another line instead of squeezing the name. Each names its file for a screen reader.
-            val openLabel = stringResource(R.string.open_file, file.name)
-            val shareLabel = stringResource(R.string.share_file, file.name)
-            val saveLabel = stringResource(R.string.save_file, file.name)
-            val printLabel = stringResource(R.string.print_file, file.name)
-            // Their icons line up with the file's.
-            FlowRow(Modifier.padding(start = 8.dp)) {
-                TextButton(onClick = onOpen, enabled = canOpen, contentPadding = RowButtonPadding, modifier = Modifier.semantics { contentDescription = openLabel }) {
-                    RowButtonContent(Icons.AutoMirrored.Rounded.OpenInNew, stringResource(R.string.open))
+            if (onShare != null) {
+                QuietButton(onClick = onShare, enabled = canShare, contentPadding = RowButtonPadding, modifier = Modifier.semantics { contentDescription = shareLabel }) {
+                    RowButtonContent(Icons.Rounded.Share, stringResource(R.string.share))
                 }
-                if (onShare != null) {
-                    TextButton(onClick = onShare, enabled = canShare, contentPadding = RowButtonPadding, modifier = Modifier.semantics { contentDescription = shareLabel }) {
-                        RowButtonContent(Icons.Rounded.Share, stringResource(R.string.share))
-                    }
+            }
+            // Read when tapped, not when drawn: a second tap before the screen is drawn again finds it closed.
+            fun menuOpen() = saveMenu.value == file.name
+            Box {
+                QuietButton(
+                    // With Downloads to save to, a menu offers it and "Save as"; otherwise "Save as" opens.
+                    onClick = { if (onSaveToDownloads != null) saveMenu.value = file.name else onSaveAs() },
+                    enabled = canSave,
+                    contentPadding = RowButtonPadding,
+                    modifier = Modifier.semantics { contentDescription = saveLabel },
+                ) {
+                    RowButtonContent(Icons.Rounded.Download, stringResource(R.string.save))
                 }
-                // Read when tapped, not when drawn: a second tap before the screen is drawn again finds it closed.
-                fun menuOpen() = saveMenu.value == file.name
-                Box {
-                    TextButton(
-                        // With Downloads to save to, a menu offers it and "Save as"; otherwise "Save as" opens.
-                        onClick = { if (onSaveToDownloads != null) saveMenu.value = file.name else onSaveAs() },
-                        enabled = canSave,
-                        contentPadding = RowButtonPadding,
-                        modifier = Modifier.semantics { contentDescription = saveLabel },
-                    ) {
-                        RowButtonContent(Icons.Rounded.Download, stringResource(R.string.save))
-                    }
-                    // The items can still be tapped while the menu fades out: only the first tap counts.
-                    DropdownMenu(expanded = menuOpen() && canSave, onDismissRequest = { if (menuOpen()) saveMenu.value = null }) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.save_to_downloads)) },
-                            leadingIcon = { Icon(Icons.Rounded.Download, contentDescription = null) },
-                            onClick = {
-                                if (menuOpen()) {
-                                    saveMenu.value = null
-                                    onSaveToDownloads?.invoke()
-                                }
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.save_as)) },
-                            leadingIcon = { Icon(Icons.Rounded.SaveAs, contentDescription = null) },
-                            onClick = {
-                                if (menuOpen()) {
-                                    saveMenu.value = null
-                                    onSaveAs()
-                                }
-                            },
-                        )
-                    }
+                // The items can still be tapped while the menu fades out: only the first tap counts.
+                DropdownMenu(expanded = menuOpen() && canSave, onDismissRequest = { if (menuOpen()) saveMenu.value = null }) {
+                    MenuItem(
+                        text = { Text(stringResource(R.string.save_to_downloads)) },
+                        leadingIcon = { Icon(Icons.Rounded.Download, contentDescription = null) },
+                        onClick = {
+                            if (menuOpen()) {
+                                saveMenu.value = null
+                                onSaveToDownloads?.invoke()
+                            }
+                        },
+                    )
+                    MenuItem(
+                        text = { Text(stringResource(R.string.save_as)) },
+                        leadingIcon = { Icon(Icons.Rounded.SaveAs, contentDescription = null) },
+                        onClick = {
+                            if (menuOpen()) {
+                                saveMenu.value = null
+                                onSaveAs()
+                            }
+                        },
+                    )
                 }
-                if (onPrint != null) {
-                    TextButton(onClick = onPrint, enabled = canPrint, contentPadding = RowButtonPadding, modifier = Modifier.semantics { contentDescription = printLabel }) {
-                        RowButtonContent(Icons.Rounded.Print, stringResource(R.string.print))
-                    }
+            }
+            if (onPrint != null) {
+                QuietButton(onClick = onPrint, enabled = canPrint, contentPadding = RowButtonPadding, modifier = Modifier.semantics { contentDescription = printLabel }) {
+                    RowButtonContent(Icons.Rounded.Print, stringResource(R.string.print))
                 }
             }
         }
@@ -639,37 +803,25 @@ private fun RowButtonContent(icon: ImageVector, text: String) {
     Text(text)
 }
 
+/**
+ * A one-word label beside another button: with a large font size or a long translation it shrinks
+ * to fit, smaller than other labels if it must (Portuguese "Compartilhar" with font size 130% on a
+ * narrow phone), and isn't cut off.
+ */
 @Composable
-private fun WideButton(
-    icon: ImageVector,
-    text: String,
-    modifier: Modifier,
-    primary: Boolean = false,
-    tonal: Boolean = false,
-    enabled: Boolean = true,
-    halfWidth: Boolean = false,
-    onClick: () -> Unit,
-) {
-    val content: @Composable () -> Unit = {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        // With a large font size or a long translation: beside another button, the label (one word)
-        // shrinks to fit, smaller than other labels if it must (Portuguese "Compartilhar" with font size
-        // 130% on a narrow phone); across the screen, it takes a second line. Either way it isn't cut off.
-        if (halfWidth) {
-            Text(
-                text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                autoSize = WholeWordsAutoSize(MaterialTheme.typography.labelLarge.fontSize),
-            )
-        } else {
-            Text(text, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-        }
-    }
-    when {
-        primary -> Button(onClick = onClick, enabled = enabled, modifier = modifier) { content() }
-        tonal -> FilledTonalButton(onClick = onClick, enabled = enabled, modifier = modifier) { content() }
-        else -> OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier) { content() }
+private fun HalfWidthLabel(text: String) {
+    Text(
+        text,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        autoSize = WholeWordsAutoSize(MaterialTheme.typography.labelLarge.fontSize),
+    )
+}
+
+/** One of the ways to keep the result, a row of the sheet under Open and Share. */
+@Composable
+private fun ActionRow(icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit) {
+    SheetRow(onClick = onClick, enabled = enabled, icon = icon, minHeight = 52.dp, role = Role.Button) {
+        Text(label, style = MaterialTheme.typography.bodyLarge)
     }
 }

@@ -4,7 +4,6 @@ import androidx.annotation.StringRes
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
@@ -26,15 +26,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
@@ -70,6 +66,12 @@ import io.github.nath_goa.usugami.R
 import io.github.nath_goa.usugami.core.SignatureLayout
 import io.github.nath_goa.usugami.data.Signature
 import io.github.nath_goa.usugami.data.SignatureInk
+import io.github.nath_goa.usugami.ui.kit.BarLine
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.PrimaryButton
+import io.github.nath_goa.usugami.ui.kit.QuietButton
+import io.github.nath_goa.usugami.ui.kit.UsugamiTopBar
+import io.github.nath_goa.usugami.ui.kit.paperEdge
 import kotlin.math.hypot
 
 /** The pen, in pad units, as the screen draws it; the PDF's image is drawn with the same width and ends. */
@@ -98,22 +100,26 @@ internal fun SignaturePadDialog(initial: Signature?, onDone: (Signature) -> Unit
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
             topBar = {
-                TopAppBar(
+                UsugamiTopBar(
                     title = { BarTitle(stringResource(R.string.sign_draw)) },
-                    windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+                    // Clear of a camera cutout beside it in landscape, too: the bar keeps out of the
+                    // system bars inside this, by what the cutout has not already taken (together, the
+                    // safe drawing area). What lies beside it there is the pad's ground, as the bar is.
+                    modifier = Modifier.windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)),
                     navigationIcon = {
-                        IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.cancel)) }
+                        GlyphButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.cancel)) }
                     },
+                    line = BarLine.Never,
                 )
             },
             bottomBar = {
-                Button(
+                PrimaryButton(
                     onClick = { onDone(drawing.addedTo(draft)) },
                     enabled = !draft.isEmpty,
                     modifier = Modifier
                         .fillMaxWidth()
                         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
-                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                 ) { Text(stringResource(R.string.sign_done)) }
             },
         ) { padding ->
@@ -121,10 +127,15 @@ internal fun SignaturePadDialog(initial: Signature?, onDone: (Signature) -> Unit
                 Modifier
                     .padding(padding)
                     .fillMaxSize()
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text(stringResource(R.string.sign_pad_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    stringResource(R.string.sign_pad_hint),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
                 // As wide as the screen; in landscape, as tall as the room left.
                 Box(Modifier.weight(1f, fill = false).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                     SignaturePad(draft, drawing, onStroke = { draft += it }, Modifier.aspectRatio(SignatureLayout.PAD_WIDTH / SignatureLayout.PAD_HEIGHT))
@@ -134,7 +145,7 @@ internal fun SignaturePadDialog(initial: Signature?, onDone: (Signature) -> Unit
                     Spacer(Modifier.width(8.dp))
                     ColorSwatches(SignatureInk.entries, draft.ink, onSelect = { draft = draft.withInk(it) }, argb = { it.argb }, label = ::inkLabel)
                     Spacer(Modifier.weight(1f))
-                    OutlinedButton(onClick = {
+                    QuietButton(onClick = {
                         draft = draft.cleared()
                         drawing.drop()
                     }, enabled = !draft.isEmpty) { Text(stringResource(R.string.sign_clear)) }
@@ -199,11 +210,12 @@ private fun SignaturePad(signature: Signature, drawing: DrawingStroke, onStroke:
     val description = stringResource(R.string.sign_pad)
     Canvas(
         modifier
+            // Real paper, its edge outside the pad, so the pad is exactly where it is drawn on.
+            .paperEdge(radius = 12.dp)
             .clip(shape)
             // A stroke starting at the pad's edge draws, instead of going back.
             .systemGestureExclusion()
             .background(Color.White)
-            .border(1.dp, MaterialTheme.colorScheme.outline, shape)
             .semantics { contentDescription = description }
             .pointerInput(Unit) {
                 awaitEachGesture {

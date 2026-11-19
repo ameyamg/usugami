@@ -1,6 +1,5 @@
 package io.github.nath_goa.usugami.ui
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,11 +7,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,15 +26,20 @@ import io.github.nath_goa.usugami.core.LayoutSettings
 import io.github.nath_goa.usugami.core.Margin
 import io.github.nath_goa.usugami.core.PageOrientation
 import io.github.nath_goa.usugami.core.PageSize
+import io.github.nath_goa.usugami.ui.kit.DropdownChip
+import io.github.nath_goa.usugami.ui.kit.MenuItem
+import io.github.nath_goa.usugami.ui.kit.fadingEdges
 
 /** Page size, orientation and margin pickers, like the options panel of the web tools. */
 @Composable
 fun OptionsRow(layout: LayoutSettings, onChange: (LayoutSettings) -> Unit, modifier: Modifier = Modifier) {
     val fit = layout.pageSize == PageSize.FIT
+    val scroll = rememberScrollState()
     Row(
         modifier
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp),
+            .fadingEdges(scroll)
+            .horizontalScroll(scroll)
+            .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         OptionChip(
@@ -82,16 +83,11 @@ internal fun <T> OptionChip(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        AssistChip(
-            onClick = { expanded = true },
-            enabled = enabled,
-            // When the chosen value changes length, the chip (and the chips after it) resize smoothly.
-            label = { Text(stringResource(R.string.option_value, label, value), modifier = Modifier.animateContentSize(Motion.medium())) },
-            trailingIcon = { Icon(Icons.Rounded.ArrowDropDown, contentDescription = null) },
-        )
+        // When the chosen value changes length, the chip (and the chips after it) resize smoothly.
+        DropdownChip(stringResource(R.string.option_value, label, value), onClick = { expanded = true }, enabled = enabled)
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach { option ->
-                DropdownMenuItem(
+                MenuItem(
                     text = { Text(optionLabel(option)) },
                     onClick = {
                         expanded = false

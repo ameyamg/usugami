@@ -1,30 +1,23 @@
 package io.github.nath_goa.usugami.ui
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -33,24 +26,16 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.NoteAdd
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.PictureAsPdf
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -60,13 +45,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -76,6 +59,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -86,6 +70,23 @@ import io.github.nath_goa.usugami.core.PageChoice
 import io.github.nath_goa.usugami.core.PdfPageSelection
 import io.github.nath_goa.usugami.data.PdfInput
 import io.github.nath_goa.usugami.data.PdfPageRef
+import io.github.nath_goa.usugami.ui.kit.ButtonGlyph
+import io.github.nath_goa.usugami.ui.kit.ButtonWithGlyphPadding
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.MenuItem
+import io.github.nath_goa.usugami.ui.kit.PaperButton
+import io.github.nath_goa.usugami.ui.kit.PressIndication
+import io.github.nath_goa.usugami.ui.kit.QuietButton
+import io.github.nath_goa.usugami.ui.kit.Seal
+import io.github.nath_goa.usugami.ui.kit.SheetShape
+import io.github.nath_goa.usugami.ui.kit.TileShape
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.WellField
+import io.github.nath_goa.usugami.ui.kit.clipped
+import io.github.nath_goa.usugami.ui.kit.layered
+import io.github.nath_goa.usugami.ui.kit.paper
+import io.github.nath_goa.usugami.ui.kit.rememberHaptics
+import io.github.nath_goa.usugami.ui.kit.tile
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyGridState
 
@@ -163,7 +164,7 @@ internal fun ReorganizeOptions(
     var focused by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
-    val haptic = LocalHapticFeedback.current
+    val haptics = rememberHaptics()
     val gridState = rememberLazyGridState()
     val reorder = rememberReorderableLazyGridState(gridState) { from, to ->
         val list = vm.pages.value
@@ -171,7 +172,7 @@ internal fun ReorganizeOptions(
         val b = list.firstOrNull { it.key == to.key }
         if (a != null && b != null) {
             vm.movePage(a, b)
-            haptic.performHapticFeedback(HapticFeedbackType.SegmentFrequentTick)
+            haptics.swap()
         }
     }
     // A page moved out of sight (with the buttons, by Undo or by pages moved past it), or typed
@@ -212,16 +213,16 @@ internal fun ReorganizeOptions(
             Text(
                 pluralStringResource(R.plurals.page_count, pages.size, pages.size),
                 style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
+                modifier = Modifier.weight(1f).padding(start = 8.dp).semantics { liveRegion = LiveRegionMode.Polite },
             )
-            TextButton(onClick = ::selectAllOrNone, enabled = pages.isNotEmpty()) {
+            QuietButton(onClick = ::selectAllOrNone, enabled = pages.isNotEmpty()) {
                 Text(stringResource(if (everySelected) R.string.reorganize_select_none else R.string.reorganize_select_all))
             }
-            IconButton(onClick = vm::undo, enabled = canUndo) {
+            GlyphButton(onClick = vm::undo, enabled = canUndo) {
                 Icon(Icons.AutoMirrored.Rounded.Undo, contentDescription = stringResource(R.string.undo))
             }
         }
-        OutlinedTextField(
+        WellField(
             value = text,
             onValueChange = { new ->
                 typed = new
@@ -234,13 +235,14 @@ internal fun ReorganizeOptions(
             label = { Text(stringResource(R.string.reorganize_pages_field)) },
             singleLine = true,
             isError = said != null,
+            errorMessage = said,
             // A screen reader hears what is wrong as it shows.
             supportingText = {
                 Text(said ?: stringResource(R.string.reorganize_pages_hint), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
             },
             trailingIcon = if (text.isEmpty()) null else {
                 {
-                    IconButton(onClick = {
+                    GlyphButton(onClick = {
                         typed = ""
                         showProblem = false
                         keepOne = false
@@ -266,15 +268,27 @@ internal fun ReorganizeOptions(
 
         // Always there, the same height whatever is selected, with nothing between it and the grid:
         // the grid below never moves under the finger that taps a page.
-        PageActions(pages, places, vm, onRemove = { if (!vm.removeChosen()) keepOne = true }, Modifier.padding(top = 8.dp))
+        PageActions(
+            pages, places, vm,
+            onRemove = {
+                if (!vm.removeChosen()) {
+                    keepOne = true
+                    haptics.reject()
+                }
+            },
+            Modifier.padding(top = 8.dp),
+        )
 
         LazyVerticalGrid(
             columns = GridCells.Adaptive(TileMinWidth),
             state = gridState,
             modifier = Modifier
-                .padding(top = 12.dp)
+                .padding(top = 4.dp)
                 .fillMaxWidth()
                 .heightIn(max = GridMaxHeight),
+            // Room inside the grid, which clips, for a page held to be moved to rise with its shadow;
+            // the pages lie where they did, 12 under the bar.
+            contentPadding = PaddingValues(top = 8.dp, bottom = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -307,11 +321,11 @@ internal fun ReorganizeOptions(
                         modifier = Modifier.longPressDraggableHandle(
                             onDragStarted = {
                                 vm.beginPageDrag()
-                                haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                haptics.lift()
                             },
                             onDragStopped = {
                                 vm.endPageDrag()
-                                haptic.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                                haptics.drop()
                             },
                         ),
                     )
@@ -322,7 +336,8 @@ internal fun ReorganizeOptions(
             stringResource(R.string.reorganize_move_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp),
+            // Also off the pages cut at the grid's foot while it scrolls inside itself.
+            modifier = Modifier.padding(start = 8.dp, top = 8.dp, end = 8.dp),
         )
 
         // Pages added go after the last selected page, or at the end.
@@ -333,7 +348,7 @@ internal fun ReorganizeOptions(
             itemVerticalAlignment = Alignment.CenterVertically,
         ) {
             AddPagesButton(enabled = !importing, onAddPdf = { onAddPdf(after) }, onAddBlank = { vm.addBlankPage(after) })
-            TextButton(onClick = vm::resetToOriginal, enabled = changed) { Text(stringResource(R.string.pdf_reset_pages)) }
+            QuietButton(onClick = vm::resetToOriginal, enabled = changed) { Text(stringResource(R.string.pdf_reset_pages)) }
         }
     }
 }
@@ -347,59 +362,61 @@ internal fun ReorganizeOptions(
 private fun PageActions(pages: List<PdfPageRef>, places: List<Int>, vm: PdfToolsViewModel, onRemove: () -> Unit, modifier: Modifier) {
     val any = places.isNotEmpty()
     val one = places.singleOrNull()?.let(pages::getOrNull)
-    val color by animateColorAsState(
-        if (any) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-        Motion.short(),
-        label = "page bar",
-    )
-    Surface(
-        color = color,
-        contentColor = if (any) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-        shape = RoundedCornerShape(16.dp),
-        modifier = modifier.fillMaxWidth(),
-    ) {
-        Row(Modifier.heightIn(min = 48.dp).padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            // A screen reader hears it as pages are selected. Beside five buttons with a large font size,
-            // it shrinks rather than breaking a word (Indonesian "Halaman").
-            Text(
-                when {
-                    !any -> stringResource(R.string.reorganize_tap_pages)
-                    one != null -> stringResource(R.string.pdf_page_number, places[0] + 1)
-                    else -> stringResource(R.string.reorganize_selected_count, places.size, pages.size)
-                },
-                style = MaterialTheme.typography.labelLarge.withEmLineHeight(),
-                autoSize = WholeWordsAutoSize(MaterialTheme.typography.labelLarge.fontSize),
-                modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
-            )
-            if (one != null) {
-                val index = places[0]
-                val number = index + 1
-                IconButton(onClick = { vm.movePageBy(one, -1) }, enabled = index > 0) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.move_page_earlier, number))
-                }
-                IconButton(onClick = { vm.movePageBy(one, 1) }, enabled = index < pages.lastIndex) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = stringResource(R.string.move_page_later, number))
-                }
-                IconButton(onClick = { vm.rotateChosen(-90) }) {
-                    TurnIcon(clockwise = false, description = stringResource(R.string.rotate_page_left, number))
-                }
-                IconButton(onClick = { vm.rotateChosen(90) }) {
-                    TurnIcon(clockwise = true, description = stringResource(R.string.rotate_page_right, number))
-                }
-                // Also for the only page: pressed, it says a PDF keeps at least one.
-                IconButton(onClick = onRemove) {
-                    Icon(Icons.Rounded.Delete, contentDescription = stringResource(R.string.remove_page, number))
-                }
-            } else if (any) {
-                IconButton(onClick = { vm.rotateChosen(-90) }) {
-                    TurnIcon(clockwise = false, description = stringResource(R.string.rotate_selected_left))
-                }
-                IconButton(onClick = { vm.rotateChosen(90) }) {
-                    TurnIcon(clockwise = true, description = stringResource(R.string.rotate_selected_right))
-                }
-                // With every page selected, pressed, it says a PDF keeps at least one.
-                IconButton(onClick = onRemove) {
-                    Icon(Icons.Rounded.Delete, contentDescription = pluralStringResource(R.plurals.remove_selected_pages, places.size, places.size))
+    val colors = Usugami.colors
+    // Lilac while pages are selected, a well while none are; read while drawing.
+    val fill = animateColorAsState(if (any) colors.lilac else colors.well, Motion.appear(), label = "page bar")
+    CompositionLocalProvider(LocalContentColor provides if (any) colors.onLilac else MaterialTheme.colorScheme.onSurfaceVariant) {
+        Box(
+            modifier
+                .fillMaxWidth()
+                // The one node 2.0.1's surface was, clipped without a layer that would make it another.
+                .semantics { isTraversalGroup = true }
+                .clipped(SheetShape)
+                .drawBehind { drawRect(fill.value) },
+        ) {
+            Row(Modifier.heightIn(min = 48.dp).padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                // A screen reader hears it as pages are selected. Beside five buttons with a large font size,
+                // it shrinks rather than breaking a word (Indonesian "Halaman").
+                Text(
+                    when {
+                        !any -> stringResource(R.string.reorganize_tap_pages)
+                        one != null -> stringResource(R.string.pdf_page_number, places[0] + 1)
+                        else -> stringResource(R.string.reorganize_selected_count, places.size, pages.size)
+                    },
+                    style = MaterialTheme.typography.labelLarge.withEmLineHeight(),
+                    autoSize = WholeWordsAutoSize(MaterialTheme.typography.labelLarge.fontSize),
+                    modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
+                )
+                if (one != null) {
+                    val index = places[0]
+                    val number = index + 1
+                    GlyphButton(onClick = { vm.movePageBy(one, -1) }, enabled = index > 0) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.move_page_earlier, number))
+                    }
+                    GlyphButton(onClick = { vm.movePageBy(one, 1) }, enabled = index < pages.lastIndex) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = stringResource(R.string.move_page_later, number))
+                    }
+                    GlyphButton(onClick = { vm.rotateChosen(-90) }) {
+                        TurnIcon(clockwise = false, description = stringResource(R.string.rotate_page_left, number))
+                    }
+                    GlyphButton(onClick = { vm.rotateChosen(90) }) {
+                        TurnIcon(clockwise = true, description = stringResource(R.string.rotate_page_right, number))
+                    }
+                    // Also for the only page: pressed, it says a PDF keeps at least one.
+                    GlyphButton(onClick = onRemove) {
+                        Icon(Icons.Rounded.Delete, contentDescription = stringResource(R.string.remove_page, number))
+                    }
+                } else if (any) {
+                    GlyphButton(onClick = { vm.rotateChosen(-90) }) {
+                        TurnIcon(clockwise = false, description = stringResource(R.string.rotate_selected_left))
+                    }
+                    GlyphButton(onClick = { vm.rotateChosen(90) }) {
+                        TurnIcon(clockwise = true, description = stringResource(R.string.rotate_selected_right))
+                    }
+                    // With every page selected, pressed, it says a PDF keeps at least one.
+                    GlyphButton(onClick = onRemove) {
+                        Icon(Icons.Rounded.Delete, contentDescription = pluralStringResource(R.plurals.remove_selected_pages, places.size, places.size))
+                    }
                 }
             }
         }
@@ -425,73 +442,91 @@ private fun ReorganizeTile(
     actions: List<CustomAccessibilityAction>,
     modifier: Modifier,
 ) {
-    val borderWidth by animateDpAsState(if (isSelected) 3.dp else 1.dp, Motion.short(), label = "page border width")
-    val borderColor by animateColorAsState(
-        if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-        Motion.short(),
-        label = "page border color",
+    val check = animateFloatAsState(if (isSelected) 1f else 0f, Motion.short(), label = "page check")
+    // Held to be moved, the page rises a little over the others, lighter, with a shadow; let go, it
+    // settles back as after a flick.
+    val lift = animateFloatAsState(
+        if (dragging) 1.04f else 1f,
+        if (dragging) Motion.ui(0.001f) else Motion.flick(0.001f),
+        label = "page lift",
     )
-    val check by animateFloatAsState(if (isSelected) 1f else 0f, Motion.short(), label = "page check")
-    val elevation by animateDpAsState(if (dragging) 8.dp else 0.dp, label = "drag elevation")
     val page = when {
         ref.isBlank || input == null -> stringResource(R.string.reorganize_page_blank, number)
         fromOther -> stringResource(R.string.reorganize_page_from, number, input.name)
         else -> stringResource(R.string.pdf_page_number, number)
     }
     val turned = turnedLabel(ref.rotation)?.let { stringResource(it) }
-    OutlinedCard(
-        border = BorderStroke(borderWidth, borderColor),
-        elevation = CardDefaults.outlinedCardElevation(defaultElevation = elevation),
-        modifier = modifier
-            .clip(CardDefaults.outlinedShape)
-            .toggleable(value = isSelected, role = Role.Checkbox, onValueChange = { onClick() })
+    Column(
+        modifier
+            .graphicsLayer {
+                scaleX = lift.value
+                scaleY = lift.value
+                // The shadow rises and settles with the scale: none at rest, 8 dp at the full lift,
+                // never below none while the flick swings back past rest. tile() clips.
+                shadowElevation = ((lift.value - 1f) / 0.04f).coerceIn(0f, 1f) * 8.dp.toPx()
+                shape = TileShape
+                clip = false
+            }
+            .tile(isSelected, lifted = dragging)
+            // The press and the focus outline follow the tile's corners, the outline just inside its chosen edge.
+            .toggleable(
+                value = isSelected,
+                interactionSource = null,
+                indication = PressIndication.shaped(TileShape, focusInset = 2.dp),
+                role = Role.Checkbox,
+                onValueChange = { onClick() },
+            )
             .semantics {
                 contentDescription = if (turned == null) page else "$page, $turned"
                 customActions = actions
             },
     ) {
-        Box(Modifier.fillMaxWidth().aspectRatio(TILE_ASPECT), contentAlignment = Alignment.Center) {
-            if (picture == null || ref.isBlank) BlankPage(ref, Modifier.fillMaxSize())
-            else TurnedThumbnail(picture, ref.page, ref.rotation, Modifier.fillMaxSize(), aspect = TILE_ASPECT)
-            Icon(
-                Icons.Rounded.Check,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier
+        Box(Modifier.padding(6.dp).fillMaxWidth().aspectRatio(TILE_ASPECT), contentAlignment = Alignment.Center) {
+            TilePicture(picture, ref)
+            Seal(
+                Modifier
                     .align(Alignment.TopEnd)
-                    .padding(6.dp)
-                    .graphicsLayer {
-                        alpha = check
-                        scaleX = 0.6f + 0.4f * check
-                        scaleY = 0.6f + 0.4f * check
-                    }
-                    .size(20.dp)
-                    .background(MaterialTheme.colorScheme.primary, CircleShape)
-                    .padding(3.dp),
+                    .padding(4.dp)
+                    .layered {
+                        alpha = check.value
+                        scaleX = 0.6f + 0.4f * check.value
+                        scaleY = 0.6f + 0.4f * check.value
+                    },
+                size = 20.dp,
             )
         }
         Text(
             "$number",
-            style = MaterialTheme.typography.labelLarge,
+            style = Usugami.type.tabular(MaterialTheme.typography.labelLarge),
             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             modifier = Modifier
                 .align(Alignment.CenterHorizontally)
-                .padding(4.dp)
+                .padding(bottom = 6.dp)
                 .clearAndSetSemantics {},
         )
     }
 }
 
+/**
+ * A tile's page as real paper, turned with the page it shows. The angle is read here, so that while
+ * pages turn only this is composed again, not their whole tiles.
+ */
+@Composable
+private fun TilePicture(picture: PdfInput?, ref: PdfPageRef) {
+    val angle by animatePdfPageRotationAsState(ref.rotation)
+    if (picture == null || ref.isBlank) BlankPage(ref, angle, Modifier.fillMaxSize())
+    else PdfThumbnail(picture, ref.page, Modifier.fillMaxSize().turnedBy(angle, TILE_ASPECT).paper())
+}
+
 /** A blank page's picture: white, its own shape, saying so, and turned like the others. */
 @Composable
-private fun BlankPage(ref: PdfPageRef, modifier: Modifier) {
-    val angle by animatePdfPageRotationAsState(ref.rotation)
+private fun BlankPage(ref: PdfPageRef, angle: Float, modifier: Modifier) {
     val aspect = (ref.width / ref.height).takeIf { it.isFinite() && it > 0f } ?: TILE_ASPECT
     Box(modifier.turnedBy(angle, TILE_ASPECT), contentAlignment = Alignment.Center) {
         Box(
             Modifier
                 .aspectRatio(aspect, matchHeightConstraintsFirst = aspect < TILE_ASPECT)
-                .background(Color.White),
+                .paper(),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -509,14 +544,13 @@ private fun BlankPage(ref: PdfPageRef, modifier: Modifier) {
 private fun AddPagesButton(enabled: Boolean, onAddPdf: () -> Unit, onAddBlank: () -> Unit) {
     var open by rememberSaveable { mutableStateOf(false) }
     Box {
-        OutlinedButton(onClick = { open = true }, enabled = enabled, contentPadding = ButtonDefaults.ButtonWithIconContentPadding) {
-            Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
+        PaperButton(onClick = { open = true }, enabled = enabled, contentPadding = ButtonWithGlyphPadding) {
+            ButtonGlyph(Icons.Rounded.Add)
             Text(stringResource(R.string.reorganize_add))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             // An entry tapped again, or the other one, while the menu fades away adds nothing more.
-            DropdownMenuItem(
+            MenuItem(
                 text = { Text(stringResource(R.string.reorganize_add_pdf)) },
                 leadingIcon = { Icon(Icons.Rounded.PictureAsPdf, contentDescription = null) },
                 onClick = {
@@ -526,7 +560,7 @@ private fun AddPagesButton(enabled: Boolean, onAddPdf: () -> Unit, onAddBlank: (
                     }
                 },
             )
-            DropdownMenuItem(
+            MenuItem(
                 text = { Text(stringResource(R.string.reorganize_add_blank)) },
                 leadingIcon = { Icon(Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null) },
                 onClick = {

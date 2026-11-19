@@ -3,6 +3,7 @@ package io.github.nath_goa.usugami.ui
 import android.content.Context
 import android.text.format.DateFormat
 import android.text.format.Formatter
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,8 +18,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
@@ -27,20 +29,14 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Print
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
@@ -76,6 +72,14 @@ import io.github.nath_goa.usugami.core.OutputType
 import io.github.nath_goa.usugami.core.RecentFile
 import io.github.nath_goa.usugami.core.ZipArchive
 import io.github.nath_goa.usugami.data.PdfSaver
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.MenuItem
+import io.github.nath_goa.usugami.ui.kit.QuietButton
+import io.github.nath_goa.usugami.ui.kit.Space
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiDialog
+import io.github.nath_goa.usugami.ui.kit.UsugamiTopBar
+import io.github.nath_goa.usugami.ui.kit.sheetSlice
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.time.Duration
@@ -112,21 +116,21 @@ fun RecentFilesScreen(
     // The file whose menu is open: one for the whole screen, so the saved state doesn't grow with the list.
     val menu = rememberSaveable { mutableStateOf<String?>(null) }
     val today = rememberToday()
-    // The bar takes a tint of its own once the page scrolls under it.
+    // A hairline shows under the bar once the page scrolls under it.
     val barScroll = TopAppBarDefaults.pinnedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(barScroll.nestedScrollConnection),
         topBar = {
-            TopAppBar(
+            UsugamiTopBar(
                 scrollBehavior = barScroll,
                 title = { BarTitle(stringResource(R.string.recent_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    GlyphButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
                     }
                 },
                 actions = {
-                    if (files.isNotEmpty()) TextButton(onClick = { confirmClear = true }) { Text(stringResource(R.string.recent_clear)) }
+                    if (files.isNotEmpty()) QuietButton(onClick = { confirmClear = true }) { Text(stringResource(R.string.recent_clear)) }
                 },
             )
         },
@@ -153,25 +157,39 @@ fun RecentFilesScreen(
                     .fillMaxSize()
                     .consumeWindowInsets(padding),
                 contentPadding = PaddingValues(
-                    start = padding.calculateStartPadding(direction) + 20.dp,
-                    top = padding.calculateTopPadding() + 12.dp,
-                    end = padding.calculateEndPadding(direction) + 20.dp,
+                    start = padding.calculateStartPadding(direction) + 16.dp,
+                    top = padding.calculateTopPadding() + 8.dp,
+                    end = padding.calculateEndPadding(direction) + 16.dp,
                     bottom = padding.calculateBottomPadding() + 16.dp,
                 ),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+                // On a wide screen the sheet keeps to the widest content, in the middle.
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                items(files, key = { it.uri }) { file -> RecentFileRow(file, today, menu, actions, Modifier.animateItem()) }
+                // The rows are slices of one sheet: its corners on the first and the last.
+                itemsIndexed(files, key = { _, file -> file.uri }) { index, file ->
+                    RecentFileRow(
+                        file,
+                        today,
+                        menu,
+                        actions,
+                        Modifier
+                            .animateItem()
+                            .widthIn(max = Space.content)
+                            .sheetSlice(index, files.size, dividerInset = 56.dp),
+                    )
+                }
             }
         }
     }
 
     if (confirmClear && files.isNotEmpty()) {
-        AlertDialog(
+        UsugamiDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text(stringResource(R.string.recent_clear_title)) },
             text = { Text(stringResource(R.string.recent_clear_body)) },
             confirmButton = {
-                TextButton(onClick = {
+                QuietButton(danger = true, onClick = {
                     // Once: a second tap before the dialog has gone finds it answered.
                     if (confirmClear) {
                         confirmClear = false
@@ -179,7 +197,7 @@ fun RecentFilesScreen(
                     }
                 }) { Text(stringResource(R.string.recent_clear)) }
             },
-            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text(stringResource(R.string.cancel)) } },
+            dismissButton = { QuietButton(onClick = { confirmClear = false }) { Text(stringResource(R.string.cancel)) } },
         )
     }
 }
@@ -213,10 +231,11 @@ internal fun RecentFileRow(
     // Read when tapped, not when drawn: a second tap before the screen is drawn again finds it closed.
     fun menuOpen() = menu.value == file.uri
 
-    OutlinedCard(
-        onClick = { actions.open(file) },
-        modifier = modifier
+    // A row of the sheet it lies in, which draws its edge: no card of its own.
+    Row(
+        modifier
             .fillMaxWidth()
+            .clickable(onClick = { actions.open(file) })
             .semantics {
                 contentDescription = label
                 customActions = listOfNotNull(
@@ -224,59 +243,63 @@ internal fun RecentFileRow(
                     onPrint?.let { printFile -> CustomAccessibilityAction(print) { printFile(file); true } },
                     CustomAccessibilityAction(remove) { actions.remove(file); true },
                 )
-            },
-    ) {
-        Row(Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                // A ZIP file, or else a PDF, an image or a text file, as its type says.
-                if (file.type == ZipArchive.MIME) Icons.Rounded.FolderZip else OutputType.ofMime(file.type).icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(26.dp),
-            )
-            Spacer(Modifier.width(16.dp))
-            // The row's label says the same.
-            Column(
-                Modifier
-                    .weight(1f)
-                    .padding(vertical = 6.dp)
-                    .clearAndSetSemantics {},
-            ) {
-                Text(file.name, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(details, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Box {
-                // A screen reader has the menu's choices as the row's actions instead.
-                IconButton(onClick = { menu.value = file.uri }, modifier = Modifier.clearAndSetSemantics {}) {
-                    Icon(Icons.Rounded.MoreVert, contentDescription = null)
+            .padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            // A ZIP file, or else a PDF, an image or a text file, as its type says.
+            if (file.type == ZipArchive.MIME) Icons.Rounded.FolderZip else OutputType.ofMime(file.type).icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(24.dp),
+        )
+        Spacer(Modifier.width(16.dp))
+        // The row's label says the same.
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(vertical = 8.dp)
+                .clearAndSetSemantics {},
+        ) {
+            Text(file.name, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(
+                details,
+                style = Usugami.type.tabular(MaterialTheme.typography.bodySmall),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Box {
+            // A screen reader has the menu's choices as the row's actions instead.
+            GlyphButton(onClick = { menu.value = file.uri }, modifier = Modifier.clearAndSetSemantics {}) {
+                Icon(Icons.Rounded.MoreVert, contentDescription = null)
+            }
+            // The items can still be tapped while the menu fades out: only the first tap counts.
+            DropdownMenu(expanded = menuOpen(), onDismissRequest = { if (menuOpen()) menu.value = null }) {
+                FileMenuItem(Icons.AutoMirrored.Rounded.OpenInNew, stringResource(R.string.open)) {
+                    if (menuOpen()) {
+                        menu.value = null
+                        actions.open(file)
+                    }
                 }
-                // The items can still be tapped while the menu fades out: only the first tap counts.
-                DropdownMenu(expanded = menuOpen(), onDismissRequest = { if (menuOpen()) menu.value = null }) {
-                    MenuItem(Icons.AutoMirrored.Rounded.OpenInNew, stringResource(R.string.open)) {
+                FileMenuItem(Icons.Rounded.Share, share) {
+                    if (menuOpen()) {
+                        menu.value = null
+                        actions.share(file)
+                    }
+                }
+                if (onPrint != null) {
+                    FileMenuItem(Icons.Rounded.Print, print) {
                         if (menuOpen()) {
                             menu.value = null
-                            actions.open(file)
+                            onPrint(file)
                         }
                     }
-                    MenuItem(Icons.Rounded.Share, share) {
-                        if (menuOpen()) {
-                            menu.value = null
-                            actions.share(file)
-                        }
-                    }
-                    if (onPrint != null) {
-                        MenuItem(Icons.Rounded.Print, print) {
-                            if (menuOpen()) {
-                                menu.value = null
-                                onPrint(file)
-                            }
-                        }
-                    }
-                    MenuItem(Icons.Rounded.RemoveCircleOutline, remove) {
-                        if (menuOpen()) {
-                            menu.value = null
-                            actions.remove(file)
-                        }
+                }
+                FileMenuItem(Icons.Rounded.RemoveCircleOutline, remove) {
+                    if (menuOpen()) {
+                        menu.value = null
+                        actions.remove(file)
                     }
                 }
             }
@@ -285,8 +308,8 @@ internal fun RecentFileRow(
 }
 
 @Composable
-private fun MenuItem(icon: ImageVector, text: String, onClick: () -> Unit) {
-    DropdownMenuItem(text = { Text(text) }, leadingIcon = { Icon(icon, contentDescription = null) }, onClick = onClick)
+private fun FileMenuItem(icon: ImageVector, text: String, onClick: () -> Unit) {
+    MenuItem(text = { Text(text) }, leadingIcon = { Icon(icon, contentDescription = null) }, onClick = onClick)
 }
 
 /**

@@ -24,19 +24,11 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -65,6 +57,16 @@ import io.github.nath_goa.usugami.data.AppLanguage
 import io.github.nath_goa.usugami.data.Edition
 import io.github.nath_goa.usugami.data.OcrLanguage
 import io.github.nath_goa.usugami.data.OcrProblem
+import io.github.nath_goa.usugami.ui.kit.LinearProgress
+import io.github.nath_goa.usugami.ui.kit.PrimaryButton
+import io.github.nath_goa.usugami.ui.kit.QuietButton
+import io.github.nath_goa.usugami.ui.kit.Segment
+import io.github.nath_goa.usugami.ui.kit.SegmentedTrack
+import io.github.nath_goa.usugami.ui.kit.SheetDivider
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiBottomSheet
+import io.github.nath_goa.usugami.ui.kit.UsugamiDialog
+import io.github.nath_goa.usugami.ui.kit.WellField
 
 /**
  * The last step before converting: one PDF or one per page, the file name, compression and OCR.
@@ -99,7 +101,7 @@ fun ConvertSheet(
     val oneFile = merge || pageCount == 1
     val create = { onCreate(merge, name, compression, if (BuildConfig.HAS_OCR && ocrEnabled) ocrLanguage else null) }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    UsugamiBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         // Scrolls when the sheet doesn't fit (landscape, small screens, keyboard open), so the
         // Create button can always be reached.
         Column(
@@ -112,9 +114,11 @@ fun ConvertSheet(
             Text(stringResource(R.string.convert_title), style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(4.dp))
             Text(summary(imageCount, layout), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(16.dp))
+            SheetDivider()
 
             if (pageCount > 1) {
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(8.dp))
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -146,7 +150,7 @@ fun ConvertSheet(
             ) {
                 Column {
                     Spacer(Modifier.height(16.dp))
-                    OutlinedTextField(
+                    WellField(
                         value = name,
                         onValueChange = { name = it },
                         label = { Text(stringResource(R.string.file_name)) },
@@ -160,16 +164,13 @@ fun ConvertSheet(
             }
 
             Spacer(Modifier.height(20.dp))
-            Text(stringResource(R.string.compression_title), style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.compression_title), style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                Compression.entries.forEachIndexed { index, level ->
-                    SegmentedButton(
+            SegmentedTrack(Compression.entries.indexOf(compression), Compression.entries.size, Modifier.fillMaxWidth()) {
+                Compression.entries.forEach { level ->
+                    Segment(
                         selected = compression == level,
                         onClick = { compression = level },
-                        shape = SegmentedButtonDefaults.itemShape(index, Compression.entries.size),
-                        icon = {},
-                        contentPadding = SegmentPadding,
                         label = { SegmentLabel(compressionLabel(level)) },
                     )
                 }
@@ -192,6 +193,8 @@ fun ConvertSheet(
             // Usugami Lite has no text recognition.
             if (BuildConfig.HAS_OCR) {
                 Spacer(Modifier.height(16.dp))
+                SheetDivider()
+                Spacer(Modifier.height(8.dp))
                 Row(
                     Modifier.fillMaxWidth().toggleable(value = ocrEnabled, role = Role.Switch, onValueChange = { ocrEnabled = it })
                         .padding(vertical = 8.dp),
@@ -230,7 +233,7 @@ fun ConvertSheet(
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
             }
-            Button(onClick = create, enabled = !importing && !saving, modifier = Modifier.fillMaxWidth()) {
+            PrimaryButton(onClick = create, enabled = !importing && !saving, modifier = Modifier.fillMaxWidth()) {
                 AnimatedContent(
                     targetState = oneFile,
                     transitionSpec = { textSwap() },
@@ -289,7 +292,7 @@ fun ProgressDialog(progress: Progress, cancelling: Boolean, onCancel: () -> Unit
             label = "progress",
         )
     }
-    AlertDialog(
+    UsugamiDialog(
         onDismissRequest = {},
         // The screen stays on while a job shows its progress, which can take minutes, and goes off
         // as it would once the dialog has gone, the job done, failed or cancelled.
@@ -311,13 +314,13 @@ fun ProgressDialog(progress: Progress, cancelling: Boolean, onCancel: () -> Unit
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (progress.total == 0) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    LinearProgress(Modifier.fillMaxWidth())
                 } else {
-                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                    LinearProgress(progress = { fraction }, modifier = Modifier.fillMaxWidth())
                 }
                 when (progress.stage) {
                     Progress.Stage.DOWNLOAD_OCR -> {
-                        if (progress.total > 0) Text(stringResource(R.string.ocr_download_percent, progress.done))
+                        if (progress.total > 0) Text(stringResource(R.string.ocr_download_percent, progress.done), style = Usugami.type.tabular(LocalTextStyle.current))
                         Text(
                             stringResource(R.string.ocr_download_note),
                             style = MaterialTheme.typography.bodySmall,
@@ -325,18 +328,18 @@ fun ProgressDialog(progress: Progress, cancelling: Boolean, onCancel: () -> Unit
                         )
                     }
                     Progress.Stage.CREATE ->
-                        Text(pluralStringResource(R.plurals.progress_images, progress.total, progress.done, progress.total))
+                        Text(pluralStringResource(R.plurals.progress_images, progress.total, progress.done, progress.total), style = Usugami.type.tabular(LocalTextStyle.current))
                     Progress.Stage.READ_TEXT ->
-                        Text(pluralStringResource(R.plurals.progress_pages, progress.total, progress.done, progress.total))
+                        Text(pluralStringResource(R.plurals.progress_pages, progress.total, progress.done, progress.total), style = Usugami.type.tabular(LocalTextStyle.current))
                     Progress.Stage.ADD_TEXT -> Unit
                     Progress.Stage.ADD_MARK ->
-                        if (progress.total > 0) Text(stringResource(R.string.batch_progress, progress.done + 1, progress.total))
+                        if (progress.total > 0) Text(stringResource(R.string.batch_progress, progress.done + 1, progress.total), style = Usugami.type.tabular(LocalTextStyle.current))
                 }
             }
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onCancel, enabled = !cancelling) {
+            QuietButton(onClick = onCancel, enabled = !cancelling) {
                 Text(stringResource(if (cancelling) R.string.cancelling else R.string.cancel))
             }
         },
@@ -349,7 +352,7 @@ fun ProgressDialog(progress: Progress, cancelling: Boolean, onCancel: () -> Unit
  */
 @Composable
 fun OcrProblemDialog(problem: OcrProblem, @StringRes retry: Int = R.string.ocr_problem_retry, onDismiss: () -> Unit) {
-    AlertDialog(
+    UsugamiDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.ocr_problem_title)) },
         text = {
@@ -372,7 +375,7 @@ fun OcrProblemDialog(problem: OcrProblem, @StringRes retry: Int = R.string.ocr_p
                 Text(stringResource(retry))
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.ok)) } },
+        confirmButton = { QuietButton(onClick = onDismiss) { Text(stringResource(R.string.ok)) } },
     )
 }
 

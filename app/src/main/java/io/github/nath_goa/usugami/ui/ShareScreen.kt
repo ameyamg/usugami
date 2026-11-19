@@ -9,8 +9,8 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -18,15 +18,11 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -40,6 +36,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.nath_goa.usugami.R
 import io.github.nath_goa.usugami.data.PdfInput
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.LinearProgress
+import io.github.nath_goa.usugami.ui.kit.Sheet
+import io.github.nath_goa.usugami.ui.kit.Space
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiTopBar
 
 /**
  * Whether the tool takes [count] PDFs shared to Usugami: any PDF tool takes one, and Merge PDF and
@@ -69,14 +71,14 @@ fun ShareScreen(
     val wrongPassword by vm.wrongPassword.collectAsStateWithLifecycle()
     val views by vm.views.collectAsStateWithLifecycle()
     val busy = importing || receiving
-    // The bar takes a tint of its own once the page scrolls under it.
+    // A hairline shows under the bar once the page scrolls under it.
     val barScroll = TopAppBarDefaults.pinnedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(barScroll.nestedScrollConnection),
         topBar = {
-            TopAppBar(
+            UsugamiTopBar(
                 title = { BarTitle(stringResource(R.string.share_title)) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back)) } },
+                navigationIcon = { GlyphButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back)) } },
                 scrollBehavior = barScroll,
             )
         },
@@ -88,34 +90,37 @@ fun ShareScreen(
                 .consumeWindowInsets(padding)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+                .padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // The bar carries its own gap, so the gap opens and closes with it.
-            AnimatedVisibility(visible = busy, enter = pdfSectionEnter(), exit = pdfSectionExit(), label = "adding") {
-                LinearProgressIndicator(Modifier.padding(bottom = 16.dp).fillMaxWidth())
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                for (input in inputs) {
-                    key(input.id) { SharedPdfCard(input, thumbnail = views[input.id] ?: input, onRemove = { vm.removeInput(input.id) }) }
+            Column(Modifier.widthIn(max = Space.content).fillMaxWidth()) {
+                // The bar carries its own gap, so the gap opens and closes with it.
+                AnimatedVisibility(visible = busy, enter = pdfSectionEnter(), exit = pdfSectionExit(), label = "adding") {
+                    LinearProgress(Modifier.padding(bottom = Space.gap).fillMaxWidth())
                 }
-            }
-            // Which tools fit depends on how many PDFs there are, so they show once all are in.
-            val count = inputs.size
-            AnimatedVisibility(visible = !busy && locked.isEmpty() && count > 0, enter = pdfSectionEnter(), exit = pdfSectionExit(), label = "tools") {
-                Column {
-                    if (count > 1) {
-                        Text(
-                            stringResource(R.string.share_several_hint),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 16.dp),
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(Space.gap)) {
+                    for (input in inputs) {
+                        key(input.id) { SharedPdfCard(input, thumbnail = views[input.id] ?: input, onRemove = { vm.removeInput(input.id) }) }
                     }
-                    for ((heading, tools) in PdfToolSections) {
-                        val fitting = tools.filter { it.takesShared(count) }
-                        if (fitting.isNotEmpty()) {
-                            ToolSection(heading) {
-                                for (tool in fitting) ToolCard(tool.icon, tool.title, tool.detail) { onTool(tool) }
+                }
+                // Which tools fit depends on how many PDFs there are, so they show once all are in.
+                val count = inputs.size
+                AnimatedVisibility(visible = !busy && locked.isEmpty() && count > 0, enter = pdfSectionEnter(), exit = pdfSectionExit(), label = "tools") {
+                    Column {
+                        if (count > 1) {
+                            Text(
+                                stringResource(R.string.share_several_hint),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 8.dp, top = Space.gap, end = 8.dp),
+                            )
+                        }
+                        for ((heading, tools) in PdfToolSections) {
+                            val fitting = tools.filter { it.takesShared(count) }
+                            if (fitting.isNotEmpty()) {
+                                ToolSection(heading) {
+                                    for (tool in fitting) ToolCard(tool.icon, tool.title, tool.detail) { onTool(tool) }
+                                }
                             }
                         }
                     }
@@ -136,19 +141,27 @@ fun ShareScreen(
     }
 }
 
-/** A PDF shared to Usugami: its first page (drawn from [thumbnail]), name, pages and size, and a button that removes it. */
+/**
+ * A PDF shared to Usugami: its first page (drawn from [thumbnail]) with its other pages under it,
+ * name, pages and size, and a button that removes it.
+ */
 @Composable
 private fun SharedPdfCard(input: PdfInput, thumbnail: PdfInput, onRemove: () -> Unit) {
     val entry = pdfBatchEntry(input)
-    OutlinedCard(Modifier.fillMaxWidth()) {
+    Sheet(Modifier.fillMaxWidth()) {
+        // The padding is the room the pages under the first one need.
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            PdfThumbnail(thumbnail, 0, Modifier.size(width = 44.dp, height = 58.dp))
+            FileThumbnail(thumbnail)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
-                Text(entry.details, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    entry.details,
+                    style = Usugami.type.tabular(MaterialTheme.typography.bodySmall),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            IconButton(onClick = onRemove) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.remove_file, input.name)) }
+            GlyphButton(onClick = onRemove) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.remove_file, input.name)) }
         }
     }
 }

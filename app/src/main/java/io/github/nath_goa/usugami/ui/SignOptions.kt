@@ -2,12 +2,10 @@ package io.github.nath_goa.usugami.ui
 
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -29,7 +27,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Draw
 import androidx.compose.material.icons.rounded.East
@@ -37,14 +34,11 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.North
 import androidx.compose.material.icons.rounded.South
 import androidx.compose.material.icons.rounded.West
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,13 +49,11 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asComposePath
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -84,6 +76,20 @@ import io.github.nath_goa.usugami.core.SignatureLayout
 import io.github.nath_goa.usugami.core.SignaturePlacement
 import io.github.nath_goa.usugami.data.PdfInput
 import io.github.nath_goa.usugami.data.Signature
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.PressIndication
+import io.github.nath_goa.usugami.ui.kit.SectionHeading
+import io.github.nath_goa.usugami.ui.kit.Sheet
+import io.github.nath_goa.usugami.ui.kit.SheetDivider
+import io.github.nath_goa.usugami.ui.kit.SheetRow
+import io.github.nath_goa.usugami.ui.kit.SheetShape
+import io.github.nath_goa.usugami.ui.kit.TileShape
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiSlider
+import io.github.nath_goa.usugami.ui.kit.fadingEdges
+import io.github.nath_goa.usugami.ui.kit.paper
+import io.github.nath_goa.usugami.ui.kit.paperEdge
+import io.github.nath_goa.usugami.ui.kit.tile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -119,14 +125,14 @@ internal fun SignOptions(
     onNudge: (SignatureMove) -> Unit,
     pageSizes: suspend (PdfInput) -> List<Pair<Float, Float>>?,
 ) {
-    Text(stringResource(R.string.sign_signature), style = MaterialTheme.typography.titleMedium)
+    SectionHeading(stringResource(R.string.sign_signature), top = 8.dp, bottom = 0.dp)
     Column {
         SignatureCard(signature, onDraw)
         Text(
             stringResource(R.string.sign_note),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp),
+            modifier = Modifier.padding(start = 8.dp, top = 8.dp, end = 8.dp),
         )
         // Choosing the page and the place comes once there is a signature to place.
         val shown = freezeWhen(signature == null, signature)
@@ -134,7 +140,7 @@ internal fun SignOptions(
             if (shown != null) {
                 Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     if (input.pageCount > 1) {
-                        Text(stringResource(R.string.sign_page), style = MaterialTheme.typography.titleMedium)
+                        SectionHeading(stringResource(R.string.sign_page), top = 8.dp, bottom = 0.dp)
                         PageStrip(input, page, onPage)
                     }
                     SignaturePlacer(input, page, shown, placement, onPlacement, onNudge, pageSizes)
@@ -148,24 +154,27 @@ internal fun SignOptions(
 @Composable
 private fun SignatureCard(signature: Signature?, onDraw: () -> Unit) {
     if (signature == null) {
-        OutlinedCard(onClick = onDraw, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Rounded.Draw, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
-                Spacer(Modifier.height(8.dp))
-                Text(stringResource(R.string.sign_draw))
+        // The row is the one clickable, with its words and no role, as the card was; the sheet round
+        // it is only drawn.
+        Sheet(Modifier.fillMaxWidth(), group = false) {
+            // The row fills the sheet: its press tint and focus outline follow the sheet's corners.
+            CompositionLocalProvider(LocalIndication provides PressIndication.shaped(SheetShape)) {
+                SheetRow(onClick = onDraw, icon = Icons.Rounded.Draw) {
+                    Text(stringResource(R.string.sign_draw), style = MaterialTheme.typography.bodyLarge)
+                }
             }
         }
     } else {
         val change = stringResource(R.string.sign_change)
-        OutlinedCard(onClick = onDraw, modifier = Modifier.fillMaxWidth().semantics { contentDescription = change }) {
+        Sheet(onClick = onDraw, modifier = Modifier.fillMaxWidth().semantics { contentDescription = change }) {
             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                // On white, like the pad, so black ink shows in the dark theme too.
+                // On real paper, like the pad, so black ink shows in the dark theme too.
                 SignatureDrawing(
                     signature,
                     Modifier
                         .weight(1f)
                         .height(72.dp)
-                        .background(Color.White, RoundedCornerShape(8.dp))
+                        .paper(radius = 4.dp) // 16 − 12
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 )
                 Spacer(Modifier.width(12.dp))
@@ -200,33 +209,33 @@ private fun SignatureDrawing(signature: Signature, modifier: Modifier) {
 @Composable
 internal fun PageStrip(input: PdfInput, selected: Int, onSelect: (Int) -> Unit, marked: Set<Int> = emptySet(), markedLabel: String? = null) {
     val state = rememberLazyListState(initialFirstVisibleItemIndex = maxOf(0, selected - 1))
-    LazyRow(state = state, modifier = Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyRow(state = state, modifier = Modifier.fillMaxWidth().fadingEdges(state).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         items(input.pageCount) { index ->
             val active = index == selected
-            val borderWidth by animateDpAsState(if (active) 2.dp else 1.dp, Motion.short(), label = "page border width")
-            val borderColor by animateColorAsState(
-                if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                Motion.short(),
-                label = "page border color",
-            )
             val label = stringResource(R.string.pdf_page_number, index + 1)
             val isMarked = index in marked
-            OutlinedCard(
-                border = BorderStroke(borderWidth, borderColor),
-                modifier = Modifier
+            // A tile: lilac with a purple edge when it is the page chosen (the tile animates both).
+            Column(
+                Modifier
                     .width(72.dp)
-                    .clip(CardDefaults.outlinedShape)
-                    .selectable(selected = active, role = Role.RadioButton, onClick = { onSelect(index) })
+                    .tile(active)
+                    .selectable(
+                        selected = active,
+                        interactionSource = null,
+                        indication = PressIndication.shaped(TileShape, focusInset = 2.dp),
+                        role = Role.RadioButton,
+                        onClick = { onSelect(index) },
+                    )
                     .semantics {
                         contentDescription = label
                         if (isMarked && markedLabel != null) stateDescription = markedLabel
                     },
             ) {
-                PdfThumbnail(input, index, Modifier.fillMaxWidth().height(92.dp))
+                PdfThumbnail(input, index, Modifier.padding(4.dp).fillMaxWidth().height(84.dp).paper())
                 Row(Modifier.align(Alignment.CenterHorizontally).padding(4.dp).clearAndSetSemantics {}, verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "${index + 1}",
-                        style = MaterialTheme.typography.labelLarge,
+                        style = Usugami.type.tabular(MaterialTheme.typography.labelMedium),
                         color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     )
                     if (isMarked) {
@@ -272,35 +281,39 @@ private fun SignaturePlacer(
     // the screen shows yet: quick presses each move it a step.
     fun step(dx: Float, dy: Float): SignatureMove = { latest -> placed(latest).let { fit(it.copy(centerX = it.centerX + dx, centerY = it.centerY + dy)) } }
 
-    Text(stringResource(R.string.sign_place), style = MaterialTheme.typography.titleMedium)
+    SectionHeading(stringResource(R.string.sign_place), top = 8.dp, bottom = 0.dp)
     Column {
         PlacementPreview(page, pageWidth / pageHeight, signature, current, onMove = { onPlacement(fit(it)) }, stringResource(R.string.sign_preview_description, pageIndex + 1))
         Text(
             stringResource(R.string.sign_place_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp).align(Alignment.CenterHorizontally),
+            modifier = Modifier.padding(start = 8.dp, top = 8.dp, end = 8.dp).align(Alignment.CenterHorizontally),
         )
     }
     val range = SignatureLayout.widthRange(pageWidth, pageHeight, aspect)
     val sizeDescription = stringResource(R.string.sign_size_description)
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(stringResource(R.string.sign_size), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.clearAndSetSemantics {})
-        Spacer(Modifier.width(16.dp))
-        Slider(
-            value = current.width,
-            onValueChange = { onPlacement(fit(current.copy(width = it))) },
-            // A page too small to choose a size on has one size.
-            valueRange = if (range.endInclusive > range.start) range else range.start..range.start + 1f,
-            enabled = range.endInclusive > range.start,
-            modifier = Modifier.weight(1f).semantics { contentDescription = sizeDescription },
-        )
-    }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-        NudgeButton(Icons.Rounded.West, R.string.sign_move_left, step(-NUDGE, 0f), current, onNudge)
-        NudgeButton(Icons.Rounded.North, R.string.sign_move_up, step(0f, -NUDGE), current, onNudge)
-        NudgeButton(Icons.Rounded.South, R.string.sign_move_down, step(0f, NUDGE), current, onNudge)
-        NudgeButton(Icons.Rounded.East, R.string.sign_move_right, step(NUDGE, 0f), current, onNudge)
+    // Size and the steps, on one sheet. Before, these lay bare on the ground: the sheet is only drawn.
+    Sheet(Modifier.fillMaxWidth(), group = false) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.sign_size), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.clearAndSetSemantics {})
+            Spacer(Modifier.width(16.dp))
+            UsugamiSlider(
+                value = current.width,
+                onValueChange = { onPlacement(fit(current.copy(width = it))) },
+                // A page too small to choose a size on has one size.
+                valueRange = if (range.endInclusive > range.start) range else range.start..range.start + 1f,
+                enabled = range.endInclusive > range.start,
+                modifier = Modifier.weight(1f).semantics { contentDescription = sizeDescription },
+            )
+        }
+        SheetDivider()
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.Center) {
+            NudgeButton(Icons.Rounded.West, R.string.sign_move_left, step(-NUDGE, 0f), current, onNudge)
+            NudgeButton(Icons.Rounded.North, R.string.sign_move_up, step(0f, -NUDGE), current, onNudge)
+            NudgeButton(Icons.Rounded.South, R.string.sign_move_down, step(0f, NUDGE), current, onNudge)
+            NudgeButton(Icons.Rounded.East, R.string.sign_move_right, step(NUDGE, 0f), current, onNudge)
+        }
     }
 }
 
@@ -310,7 +323,7 @@ internal typealias SignatureMove = (SignaturePlacement?) -> SignaturePlacement
 /** Moves the signature by [move]; off once it is against that edge of the page. */
 @Composable
 private fun NudgeButton(icon: ImageVector, @StringRes label: Int, move: SignatureMove, current: SignaturePlacement, onNudge: (SignatureMove) -> Unit) {
-    IconButton(onClick = { onNudge(move) }, enabled = move(current) != current) {
+    GlyphButton(onClick = { onNudge(move) }, enabled = move(current) != current) {
         Icon(icon, contentDescription = stringResource(label))
     }
 }
@@ -338,7 +351,7 @@ private fun PlacementPreview(
     val y by animateFloatAsState(placement.centerY, if (dragging) snap() else Motion.short(), label = "signature y")
     val path = remember(signature) { signature.path().asComposePath() }
     val ink = Color(signature.ink.argb)
-    val frame = MaterialTheme.colorScheme.primary
+    val frame = Usugami.colors.paperInk
     // A tall page is at most 440 dp high, and less in landscape, so the whole page fits on the screen.
     val windowHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
     val tallest = min(440.dp, max(240.dp, windowHeight - 180.dp))
@@ -347,7 +360,9 @@ private fun PlacementPreview(
         Canvas(
             Modifier
                 .size(width, width / pageAspect)
-                .shadow(2.dp, RectangleShape)
+                // Real paper: its edge outside, and what is drawn kept to the page.
+                .paperEdge()
+                .clipToBounds()
                 .background(Color.White)
                 .semantics { contentDescription = description }
                 .pointerInput(Unit) {

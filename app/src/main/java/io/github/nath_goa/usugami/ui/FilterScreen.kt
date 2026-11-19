@@ -2,10 +2,7 @@ package io.github.nath_goa.usugami.ui
 
 import android.graphics.Bitmap
 import androidx.annotation.StringRes
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,20 +21,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.SliderState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,23 +36,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
@@ -72,7 +55,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.scale
 import io.github.nath_goa.usugami.R
@@ -80,6 +62,15 @@ import io.github.nath_goa.usugami.core.CropQuad
 import io.github.nath_goa.usugami.core.LookAdjustments
 import io.github.nath_goa.usugami.core.PageLook
 import io.github.nath_goa.usugami.data.PageLooks
+import io.github.nath_goa.usugami.ui.kit.CircularProgress
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.Seal
+import io.github.nath_goa.usugami.ui.kit.SectionHeading
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiSlider
+import io.github.nath_goa.usugami.ui.kit.fadingEdges
+import io.github.nath_goa.usugami.ui.kit.rememberHaptics
+import io.github.nath_goa.usugami.ui.kit.tile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -192,16 +183,19 @@ internal fun FilterStep(
                 // Being made: the page for the corners, or its look for the choices.
                 val busy = base == null || shown == null || shown.look != look || shown.adjustments != adjustments
                 if (busy && (base == null || base.bitmap != null)) {
-                    CircularProgressIndicator(if (bitmap == null) Modifier else Modifier.align(Alignment.TopEnd).size(24.dp), strokeWidth = if (bitmap == null) 4.dp else 2.dp)
+                    // Over the preview it is ink purple, which shows on the page in both themes.
+                    CircularProgress(
+                        if (bitmap == null) Modifier else Modifier.align(Alignment.TopEnd).size(24.dp),
+                        color = if (bitmap == null) MaterialTheme.colorScheme.primary else Usugami.colors.paperInk,
+                    )
                 }
             }
         },
         controls = {
-            Text(
-                stringResource(R.string.look_title),
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp).semantics { heading() },
-            )
+            // The controls show whole above the buttons on a phone at the usual text size, as in 2.0.1:
+            // the gaps between them are no larger than that leaves room for. The heading stands 8 + its own 8
+            // from the edge, in line with the labels under it.
+            SectionHeading(stringResource(R.string.look_title), Modifier.padding(horizontal = 8.dp), top = 2.dp, bottom = 4.dp)
             // Wider with larger text, so that a name breaks between its words, not in them.
             val width = SAMPLE_WIDTH * LocalDensity.current.fontScale.coerceAtLeast(1f)
             // The names at one size, smaller where a word is wider than its tile (German "Tintensparend"),
@@ -211,11 +205,13 @@ internal fun FilterStep(
             val style = MaterialTheme.typography.labelMedium
             val nameSize = wholeWordsFontSize(names, style.copy(fontWeight = FontWeight.Bold), width - 8.dp)
             val nameStyle = style.withEmLineHeight().copy(fontSize = nameSize)
+            val scroll = rememberScrollState()
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                    .fadingEdges(scroll)
+                    .horizontalScroll(scroll)
+                    .padding(horizontal = 12.dp)
                     .selectableGroup(),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
@@ -269,22 +265,9 @@ private fun LookChoice(
             .padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(
-            Modifier
-                .size(SAMPLE_WIDTH - 8.dp)
-                .clip(shape)
-                .background(colors.surfaceContainerHighest)
-                .border(if (selected) BorderStroke(3.dp, colors.primary) else BorderStroke(1.dp, colors.outlineVariant), shape),
-        ) {
+        Box(Modifier.size(SAMPLE_WIDTH - 8.dp).tile(selected)) {
             if (image != null) TurnedImage(image, rotation, Modifier.fillMaxSize().padding(6.dp))
-            if (selected) {
-                Icon(
-                    Icons.Rounded.Check,
-                    contentDescription = null,
-                    tint = colors.onPrimary,
-                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).background(colors.primary, CircleShape).padding(2.dp).size(14.dp),
-                )
-            }
+            if (selected) Seal(Modifier.align(Alignment.TopEnd).padding(4.dp), size = 20.dp)
         }
         Spacer(Modifier.height(4.dp))
         Text(
@@ -303,24 +286,32 @@ private fun LookChoice(
  * and value over it, and a button beside it ([reset] names it) that puts it back to 0. Close to 0,
  * it holds at 0, so the middle is easy to find.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AdjustmentSlider(@StringRes label: Int, @StringRes reset: Int, value: Int, onChange: (Int) -> Unit) {
     val name = stringResource(label)
     val shown = if (value > 0) "+$value" else "$value"
+    val haptics = rememberHaptics()
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.Bottom) {
         Column(Modifier.weight(1f)) {
             // The slider says both to a screen reader.
-            Row(Modifier.padding(top = 4.dp).clearAndSetSemantics {}) {
+            Row(Modifier.clearAndSetSemantics {}) {
                 Text(name, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-                Text(shown, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    shown,
+                    style = Usugami.type.tabular(MaterialTheme.typography.labelLarge),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             val range = -LookAdjustments.MAX.toFloat()..LookAdjustments.MAX.toFloat()
-            Slider(
+            UsugamiSlider(
                 value = value.toFloat(),
-                onValueChange = { v -> onChange(v.roundToInt().let { if (abs(it) <= SNAP) 0 else it }) },
+                onValueChange = { v ->
+                    val set = v.roundToInt().let { if (abs(it) <= SNAP) 0 else it }
+                    if (set == 0 && value != 0) haptics.snap()
+                    onChange(set)
+                },
                 valueRange = range,
-                track = { CentredTrack(it) },
+                centered = true,
                 // The slider's own item for a screen reader lies inside, out of reach of a name given
                 // here: this one, named, takes its place.
                 modifier = Modifier.clearAndSetSemantics {
@@ -335,45 +326,10 @@ private fun AdjustmentSlider(@StringRes label: Int, @StringRes reset: Int, value
                 },
             )
         }
-        IconButton(onClick = { onChange(0) }, enabled = value != 0) {
+        GlyphButton(onClick = { onChange(0) }, enabled = value != 0) {
             Icon(Icons.Rounded.RestartAlt, contentDescription = stringResource(reset))
         }
     }
-}
-
-/**
- * The track of a slider with 0 in its middle: filled from the middle to the thumb, either way, as
- * Material's own track is filled from its start, so 0 shows no fill. As Material's, it leaves a gap
- * round the thumb and has a dot at each end it reaches.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun CentredTrack(state: SliderState) {
-    val colors = SliderDefaults.colors()
-    Canvas(Modifier.fillMaxWidth().height(TRACK_HEIGHT)) {
-        val width = size.width
-        val fraction = state.coercedValueAsFraction
-        val thumb = width * if (layoutDirection == LayoutDirection.Rtl) 1 - fraction else fraction
-        val gap = THUMB_GAP.toPx()
-        val end = size.height / 2
-        val inside = INSIDE_CORNER.toPx()
-        trackPart(0f, thumb - gap, colors.inactiveTrackColor, end, inside)
-        trackPart(thumb + gap, width, colors.inactiveTrackColor, inside, end)
-        val middle = width / 2
-        if (thumb - gap > middle) trackPart(middle, thumb - gap, colors.activeTrackColor, inside, inside)
-        if (thumb + gap < middle) trackPart(thumb + gap, middle, colors.activeTrackColor, inside, inside)
-        val dot = STOP_DOT.toPx() / 2
-        if (thumb - gap >= size.height) drawCircle(colors.activeTrackColor, dot, Offset(end, end))
-        if (thumb + gap <= width - size.height) drawCircle(colors.activeTrackColor, dot, Offset(width - end, end))
-    }
-}
-
-/** The track from [from] to [to] across, in [color], its corners rounded [start] there and [end] at [to]. */
-private fun DrawScope.trackPart(from: Float, to: Float, color: Color, start: Float, end: Float) {
-    if (to <= from) return
-    val first = CornerRadius(start)
-    val last = CornerRadius(end)
-    drawPath(Path().apply { addRoundRect(RoundRect(from, 0f, to, size.height, first, last, last, first)) }, color)
 }
 
 /** [image] (the page upright) as large as fits, turned [rotation] degrees clockwise, in the middle. */
@@ -446,15 +402,3 @@ private const val LOOK_DELAY_MS = 150L
 
 /** A slider this close to 0 holds at 0. */
 private const val SNAP = 2
-
-/** How tall a slider's track is, as Material's. */
-private val TRACK_HEIGHT = 16.dp
-
-/** How far the track keeps from the middle of the thumb, as Material's: half the thumb and a gap. */
-private val THUMB_GAP = 8.dp
-
-/** How round the track's corners next to the thumb and the middle are, as Material's. */
-private val INSIDE_CORNER = 2.dp
-
-/** How wide the dot at each end of the track is, as Material's. */
-private val STOP_DOT = 4.dp

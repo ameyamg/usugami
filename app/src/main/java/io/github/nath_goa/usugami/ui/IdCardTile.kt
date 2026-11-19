@@ -1,8 +1,6 @@
 package io.github.nath_goa.usugami.ui
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,15 +14,10 @@ import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Crop
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -33,9 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -48,6 +39,13 @@ import io.github.nath_goa.usugami.core.IdCardLayout
 import io.github.nath_goa.usugami.core.LayoutSettings
 import io.github.nath_goa.usugami.data.ImageItem
 import io.github.nath_goa.usugami.data.Thumbnails
+import io.github.nath_goa.usugami.ui.kit.CircularProgress
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.MenuItem
+import io.github.nath_goa.usugami.ui.kit.PaperGlyphButton
+import io.github.nath_goa.usugami.ui.kit.QuietButton
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.paper
 
 /**
  * An ID card's page in the editor's grid, page [pageNumber]: the sheet as it will be in the PDF with
@@ -70,7 +68,6 @@ fun IdCardTile(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(0.85f)
-                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
                 .padding(12.dp),
         ) {
             IdCardPreview(sides, layout, thumbnails, Modifier.fillMaxSize())
@@ -79,7 +76,7 @@ fun IdCardTile(
             // from the page before), as on any page.
             Box(Modifier.align(Alignment.TopEnd)) {
                 var menu by remember { mutableStateOf(false) }
-                FilledTonalIconButton(
+                PaperGlyphButton(
                     onClick = { if (sides.size == 1) actions.crop(sides[0].id) else menu = true },
                     enabled = sides.any { it.id !in cropping },
                 ) {
@@ -87,7 +84,7 @@ fun IdCardTile(
                 }
                 DropdownMenu(expanded = menu && sides.size > 1, onDismissRequest = { menu = false }) {
                     sides.forEachIndexed { i, side ->
-                        DropdownMenuItem(
+                        MenuItem(
                             text = { Text(stringResource(if (i == 0) R.string.card_crop_front else R.string.card_crop_back)) },
                             enabled = side.id !in cropping,
                             onClick = {
@@ -103,7 +100,8 @@ fun IdCardTile(
             }
             if (sides.any { it.id in cropping }) {
                 val label = stringResource(R.string.cropping_page, pageNumber)
-                CircularProgressIndicator(Modifier.align(Alignment.Center).semantics { contentDescription = label })
+                // On the card's page: ink purple, which shows on white in both themes.
+                CircularProgress(Modifier.align(Alignment.Center).semantics { contentDescription = label }, color = Usugami.colors.paperInk)
             }
         }
         Text(
@@ -119,7 +117,7 @@ fun IdCardTile(
                 val label = stringResource(R.string.scan_pane_title, stringResource(R.string.card_add_back), stringResource(R.string.pdf_page_number, pageNumber))
                 // On a narrow tile in large text it shrinks a little, as the editor's bottom buttons do, rather
                 // than being cut off.
-                TextButton(
+                QuietButton(
                     onClick = { actions.addCardBack(sides[0].card) },
                     modifier = Modifier.weight(1f).semantics { contentDescription = label },
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
@@ -136,7 +134,7 @@ fun IdCardTile(
             } else {
                 Spacer(Modifier.weight(1f))
             }
-            IconButton(onClick = { actions.remove(sides[0].id) }) {
+            GlyphButton(onClick = { actions.remove(sides[0].id) }) {
                 Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.remove_page, pageNumber))
             }
         }
@@ -161,8 +159,7 @@ fun IdCardPreview(sides: List<ImageItem>, layout: LayoutSettings, thumbnails: Th
         Canvas(
             Modifier
                 .aspectRatio((page.pageWidth / page.pageHeight).toFloat())
-                .shadow(2.dp, RectangleShape)
-                .border(0.5.dp, Color(0x22000000)),
+                .paper(),
         ) {
             drawRect(Color.White)
             val scale = size.width / page.pageWidth.toFloat()

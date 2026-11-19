@@ -3,13 +3,7 @@ package io.github.nath_goa.usugami.ui
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -27,11 +21,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,7 +33,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -70,6 +59,12 @@ import io.github.nath_goa.usugami.R
 import io.github.nath_goa.usugami.core.MarkLayout
 import io.github.nath_goa.usugami.core.MarkStyle
 import io.github.nath_goa.usugami.data.MarkSetting
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.LinearProgress
+import io.github.nath_goa.usugami.ui.kit.Sheet
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiSlider
+import io.github.nath_goa.usugami.ui.kit.paper
 import kotlin.math.roundToInt
 
 /**
@@ -98,7 +93,7 @@ internal fun MarkCard(
         val chosen = MarkStyle.of(size.roundToInt(), opacity.roundToInt())
         if (chosen != setting.style) onStyle(chosen)
     }
-    OutlinedCard(modifier.fillMaxWidth()) {
+    Sheet(modifier.fillMaxWidth()) {
         // The whole row is the switch, for a screen reader and for a finger; the arrow is a button of its own.
         Row(
             Modifier
@@ -115,8 +110,8 @@ internal fun MarkCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            val turn by animateFloatAsState(if (open) 180f else 0f, Motion.medium(), label = "markArrow")
-            IconButton(
+            val turn by animateFloatAsState(if (open) 180f else 0f, Motion.ui(), label = "markArrow")
+            GlyphButton(
                 onClick = { open = !open },
                 modifier = Modifier.semantics {
                     if (open) collapse { open = false; true } else expand { open = true; true }
@@ -132,11 +127,11 @@ internal fun MarkCard(
         }
         // While the PDFs change: a bar under the row, in room of its own, so nothing moves meanwhile
         // (a slider being moved, say). A screen reader hears what it is.
-        val shown by animateFloatAsState(if (working) 1f else 0f, Motion.medium(), label = "markWorking")
+        val shown by animateFloatAsState(if (working) 1f else 0f, if (working) Motion.appear() else Motion.vanish(), label = "markWorking")
         val workingText = stringResource(R.string.mark_working)
         Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(4.dp).graphicsLayer { alpha = shown }) {
             if (working || shown > 0f) {
-                LinearProgressIndicator(
+                LinearProgress(
                     Modifier.fillMaxWidth().semantics {
                         contentDescription = workingText
                         liveRegion = LiveRegionMode.Polite
@@ -147,8 +142,8 @@ internal fun MarkCard(
         Spacer(Modifier.height(8.dp))
         AnimatedVisibility(
             visible = open,
-            enter = fadeIn(Motion.medium()) + expandVertically(Motion.medium()),
-            exit = fadeOut(Motion.medium()) + shrinkVertically(Motion.medium()),
+            enter = Motion.sectionEnter(),
+            exit = Motion.sectionExit(),
             label = "markPanel",
         ) {
             MarkPanel(
@@ -225,9 +220,9 @@ private fun MarkSlider(
         // The slider says both to a screen reader.
         Row(Modifier.padding(top = 4.dp).clearAndSetSemantics {}) {
             Text(name, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-            Text(shown, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(shown, style = Usugami.type.tabular(MaterialTheme.typography.labelLarge), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Slider(
+        UsugamiSlider(
             value = value,
             onValueChange = onChange,
             onValueChangeFinished = onDone,
@@ -263,15 +258,12 @@ private fun MarkPage(preview: MarkPreview?, style: MarkStyle, on: Boolean) {
     val width = preview?.width ?: A4_WIDTH
     val height = preview?.height ?: A4_HEIGHT
     val description = if (on) stringResource(R.string.mark_preview_description) else stringResource(R.string.pdf_page_number, 1)
-    val shape = MaterialTheme.shapes.extraSmall
     Box(
         Modifier
             .widthIn(max = 150.dp)
             .heightIn(max = 200.dp)
             .aspectRatio(width / height)
-            .clip(shape)
-            .background(Color.White)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+            .paper()
             .semantics {
                 contentDescription = description
                 role = Role.Image

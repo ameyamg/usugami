@@ -46,6 +46,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isSpecified
@@ -53,6 +54,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
@@ -80,6 +82,7 @@ import io.github.nath_goa.usugami.core.RedactBox
 import io.github.nath_goa.usugami.core.TextPlace
 import io.github.nath_goa.usugami.core.TextSelection
 import io.github.nath_goa.usugami.data.ReaderDocument
+import io.github.nath_goa.usugami.ui.kit.Usugami
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
@@ -125,12 +128,9 @@ private val HandleTouch = 24.dp
 /** A handle held this near the top or bottom of the page area scrolls the pages. */
 private val ScrollEdge = 56.dp
 
-/**
- * The text selected, and its handles: Usugami's red of the light theme in both themes, as pages are
- * white in both (the dark theme's pale red would hardly show on them).
- */
-private val SelectionColor = Color(0x4DB3261E)
-private val HandleColor = Color(0xFFB3261E)
+/** The text selected, and its handles: ink purple in both themes, as pages are white in both (the dark theme's lilac would hardly show on them). */
+private val SelectionColor = Color(0x4D4A3F6B)
+private val HandleColor = Color(0xFF4A3F6B)
 
 /** Find text's matches on the pages, and the match marked: fixed colours, as pages are white in both themes. */
 private val MatchColor = Color(0x66FFE600)
@@ -225,7 +225,7 @@ internal fun ReaderPages(
         modifier
             .fillMaxSize()
             .clipToBounds()
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .background(Usugami.colors.desk)
             // A selection handle dragged: before the pinch, on the box around the list, so that neither
             // the list nor a pan sideways takes the finger meanwhile. A second finger lets go of it.
             .pointerInput(list, document) {
@@ -477,6 +477,7 @@ internal fun ReaderPages(
                     items = added[index].orEmpty(),
                     selected = selectedBoxes(selection, index),
                     onCopyPage = onCopyPage?.let { copy -> { copy(index) } },
+                    zoom = { currentZoom() },
                 )
                 if (selection != null) {
                     // The selection's text of this page, read when the selection runs over it; forgotten when it goes.
@@ -633,7 +634,7 @@ private suspend fun drawTiles(
  * Page [index] of [document], white, in its shape, with its picture once drawn, its sharp part over it,
  * what Annotate added to it ([items]), Find text's [matches] on it marked, the match marked last
  * ([current], its boxes) in another colour, and the text [selected] on it (a box a line, in points).
- * [onCopyPage]: the screen reader's "Copy the text of this page".
+ * [onCopyPage]: the screen reader's "Copy the text of this page". [zoom]: what the pages are scaled by.
  */
 @Composable
 private fun ReaderPage(
@@ -648,6 +649,7 @@ private fun ReaderPage(
     items: List<PageItem>,
     selected: List<GlyphBox>,
     onCopyPage: (() -> Unit)?,
+    zoom: () -> Float,
 ) {
     val (shownWidth, shownHeight) = document.sizes[index]
     // What was added, drawn as Annotate draws it, its pictures decoded as the page shows.
@@ -677,6 +679,19 @@ private fun ReaderPage(
     }
     val image = remember(picture) { picture?.asImageBitmap() }
     val ownWidth = pageWidth(shownWidth, shownHeight, itemWidth)
+    // The page's hairline, 1 dp outside its bounds as the kit's paperEdge lies, but drawn thinner as
+    // the zoom scales the pages up, so on the screen it stays 1 dp at any zoom. The zoom is read while
+    // drawing, so a pinch recomposes nothing.
+    val edgeColor = Usugami.colors.pageEdge
+    val edge = remember(edgeColor, zoom) {
+        Modifier.drawWithCache {
+            val width = 1.dp.toPx() / zoom()
+            val stroke = Stroke(width)
+            onDrawBehind {
+                drawRect(edgeColor, Offset(-width / 2, -width / 2), Size(size.width + width, size.height + width), style = stroke)
+            }
+        }
+    }
     Box(
         Modifier
             .fillMaxWidth()
@@ -694,7 +709,9 @@ private fun ReaderPage(
                     }
                 },
             )
-            // Pages are white in their own colours, also in the dark theme.
+            // Pages are white in their own colours, also in the dark theme, edged outside their bounds so
+            // the node stays exactly the page.
+            .then(edge)
             .background(Color.White)
             .semantics {
                 contentDescription = spoken

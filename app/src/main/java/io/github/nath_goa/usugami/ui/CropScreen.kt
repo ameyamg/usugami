@@ -5,7 +5,9 @@ import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
@@ -40,20 +42,13 @@ import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.South
 import androidx.compose.material.icons.rounded.West
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -88,6 +83,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -107,6 +103,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import io.github.nath_goa.usugami.R
 import io.github.nath_goa.usugami.core.CropPoint
@@ -116,6 +113,17 @@ import io.github.nath_goa.usugami.core.PageLook
 import io.github.nath_goa.usugami.data.ImageItem
 import io.github.nath_goa.usugami.data.OriginalImage
 import io.github.nath_goa.usugami.data.PageCropper
+import io.github.nath_goa.usugami.ui.kit.BarLine
+import io.github.nath_goa.usugami.ui.kit.ButtonGlyph
+import io.github.nath_goa.usugami.ui.kit.ButtonWithGlyphPadding
+import io.github.nath_goa.usugami.ui.kit.CircularProgress
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.PaperButton
+import io.github.nath_goa.usugami.ui.kit.PrimaryButton
+import io.github.nath_goa.usugami.ui.kit.QuietButton
+import io.github.nath_goa.usugami.ui.kit.Space
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiTopBar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
@@ -176,16 +184,19 @@ fun CropScreen(
 ) {
     // Given to a page's screen while it animates away, as UsugamiApp does for screens.
     val idleSnackbar = remember { SnackbarHostState() }
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     AnimatedContent(
         targetState = session,
+        modifier = Modifier.background(Usugami.colors.screenDim),
         // Each opening is a screen of its own: one image of a scan slides away as the next comes.
         contentKey = { it?.opened },
-        transitionSpec = { Motion.screenTransition(forward = true) },
+        transitionSpec = { Motion.screenTransition(forward = true, rtl = rtl) },
         label = "crop page",
     ) { shown ->
         val live = active && transition.targetState == EnterExitState.Visible
         val settled = arrived && live && transition.currentState == EnterExitState.Visible
-        Inert(!live) {
+        val away = slideInProgress()
+        Inert(!live, slide = Modifier.screenSlide(away, rtl)) {
             val messages = if (live) snackbar else idleSnackbar
             if (shown == null) {
                 ScanWaiting(freezeWhen(!live, scan), live, messages, actions.close)
@@ -241,18 +252,21 @@ private fun CropSteps(
     fun choices() = CropChoices(state.corners, state.rotation, state.look, state.adjustments, state.allPages && pageCount > 1)
     fun turn(degrees: Int) = state.turn(degrees, source?.uprightWidth ?: 1, source?.uprightHeight ?: 1)
     val idleSnackbar = remember { SnackbarHostState() }
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
-    AnimatedContent(
-        targetState = state.step,
+    val steps = updateTransition(state.step, label = "crop step")
+    steps.AnimatedContent(
+        modifier = Modifier.background(Usugami.colors.screenDim),
         // A number: an enum's hash isn't the same each time Usugami starts, which would lose what
         // the step keeps for when Android stops it.
         contentKey = { it.ordinal },
-        transitionSpec = { Motion.screenTransition(forward = targetState.ordinal > initialState.ordinal) },
-        label = "crop step",
+        transitionSpec = { Motion.screenTransition(forward = targetState.ordinal > initialState.ordinal, depth = targetState.ordinal, rtl = rtl) },
     ) { step ->
         val filters = step == CropStep.FILTERS
         val stepLive = transition.targetState == EnterExitState.Visible
         val here = settled && stepLive && transition.currentState == EnterExitState.Visible
+        val cameOver = remember { steps.segment.let { it.targetState.ordinal > it.initialState.ordinal } }
+        val away = slideInProgress(cameOver)
         val title = stringResource(if (filters) R.string.filter_title else R.string.crop_title)
         // Which side of an ID card, or which image of a scan, this is goes with the name, so the next
         // one is heard coming in.
@@ -264,35 +278,37 @@ private fun CropSteps(
         val pane = if (place == null) title else stringResource(R.string.scan_pane_title, title, place)
         // Each step is a pane, which a screen reader names once it has come in. While it fades in, a
         // screen reader leaves it out, and only a change, such as this, makes it look again.
-        Inert(!stepLive, Modifier.semantics { if (here) paneTitle = pane }) {
+        Inert(!stepLive, Modifier.semantics { if (here) paneTitle = pane }, slide = Modifier.screenSlide(away, rtl)) {
             Scaffold(
                 topBar = {
-                    TopAppBar(
+                    UsugamiTopBar(
                         title = { StepTitle(title, place) },
                         navigationIcon = {
                             when {
-                                filters -> IconButton(onClick = { state.step = CropStep.CROP }) {
+                                filters -> GlyphButton(onClick = { state.step = CropStep.CROP }) {
                                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
                                 }
                                 // A photo just taken, or an ID card's side being added, goes when left.
-                                session.fromCamera || session.cardScan || session.queued -> IconButton(onClick = actions.close) {
+                                session.fromCamera || session.cardScan || session.queued -> GlyphButton(onClick = actions.close) {
                                     val discard = session.fromCamera || session.cardScan
                                     Icon(Icons.Rounded.Close, contentDescription = stringResource(if (discard) R.string.crop_discard else R.string.crop_stop))
                                 }
-                                else -> IconButton(onClick = actions.close) {
+                                else -> GlyphButton(onClick = actions.close) {
                                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
                                 }
                             }
                         },
                         // Rotate left and right: a quarter turn of the image, and of the page with it.
                         actions = {
-                            IconButton(onClick = { turn(-90) }) {
+                            GlyphButton(onClick = { turn(-90) }) {
                                 TurnIcon(clockwise = false, description = stringResource(R.string.crop_rotate_left))
                             }
-                            IconButton(onClick = { turn(90) }) {
+                            GlyphButton(onClick = { turn(90) }) {
                                 TurnIcon(clockwise = true, description = stringResource(R.string.crop_rotate_right))
                             }
                         },
+                        line = BarLine.Never,
+                        subtitle = true,
                     )
                 },
                 snackbarHost = { SnackbarHost(if (stepLive) snackbar else idleSnackbar) },
@@ -370,11 +386,13 @@ private fun ScanWaiting(scan: ScanQueue?, live: Boolean, snackbar: SnackbarHostS
     BackHandler(enabled = live, onBack = onClose)
     Scaffold(
         topBar = {
-            TopAppBar(
+            UsugamiTopBar(
                 title = { StepTitle(stringResource(R.string.crop_title), scan?.let { stringResource(R.string.scan_place, it.place, it.total) }) },
                 navigationIcon = {
-                    IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.crop_stop)) }
+                    GlyphButton(onClick = onClose) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.crop_stop)) }
                 },
+                line = BarLine.Never,
+                subtitle = true,
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -384,7 +402,7 @@ private fun ScanWaiting(scan: ScanQueue?, live: Boolean, snackbar: SnackbarHostS
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            CircularProgressIndicator()
+            CircularProgress()
             if (scan != null && scan.waiting.isEmpty()) {
                 Spacer(Modifier.height(16.dp))
                 Text(
@@ -635,7 +653,7 @@ internal class StepButton(
 internal fun StepButtons(main: StepButton, other: StepButton? = null) {
     val padding = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
     val mainButton = @Composable {
-        Button(onClick = main.onClick, enabled = main.enabled, contentPadding = ButtonDefaults.ButtonWithIconContentPadding) {
+        PrimaryButton(onClick = main.onClick, enabled = main.enabled, contentPadding = ButtonWithGlyphPadding) {
             StepButtonContent(main)
         }
     }
@@ -645,7 +663,7 @@ internal fun StepButtons(main: StepButton, other: StepButton? = null) {
     }
     Layout(
         content = {
-            OutlinedButton(onClick = other.onClick, enabled = other.enabled, contentPadding = ButtonDefaults.ButtonWithIconContentPadding) {
+            PaperButton(onClick = other.onClick, enabled = other.enabled, contentPadding = ButtonWithGlyphPadding) {
                 StepButtonContent(other)
             }
             mainButton()
@@ -675,15 +693,11 @@ internal fun StepButtons(main: StepButton, other: StepButton? = null) {
 
 @Composable
 private fun StepButtonContent(button: StepButton) {
-    val icon = @Composable { Icon(button.icon, contentDescription = null, modifier = Modifier.size(18.dp)) }
-    if (!button.iconAfter) {
-        icon()
-        Spacer(Modifier.width(8.dp))
-    }
+    if (!button.iconAfter) ButtonGlyph(button.icon)
     Text(stringResource(button.label), textAlign = TextAlign.Center)
     if (button.iconAfter) {
         Spacer(Modifier.width(8.dp))
-        icon()
+        Icon(button.icon, contentDescription = null, modifier = Modifier.size(20.dp))
     }
 }
 
@@ -692,8 +706,8 @@ private fun StepButtonContent(button: StepButton) {
  * screen or step animating away, whose buttons could otherwise still be pressed.
  */
 @Composable
-private fun Inert(inert: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Box(if (inert) Modifier.clearAndSetSemantics {} else modifier) {
+private fun Inert(inert: Boolean, modifier: Modifier = Modifier, slide: Modifier = Modifier, content: @Composable () -> Unit) {
+    Box(slide.then(if (inert) Modifier.clearAndSetSemantics {} else modifier)) {
         content()
         if (inert) {
             Box(
@@ -733,30 +747,30 @@ private fun CropControls(
     // A side moves only across itself: the top and bottom up and down, the others left and right.
     val across = chosen < CORNERS || (chosen - CORNERS) % 2 == 1
     val upDown = chosen < CORNERS || (chosen - CORNERS) % 2 == 0
-    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         // Which handle the arrows move; tapping a handle chooses it.
         Text(
             stringResource(HANDLE_NAMES[chosen]),
-            style = MaterialTheme.typography.labelLarge,
+            style = MaterialTheme.typography.titleSmall,
             modifier = Modifier.weight(1f),
         )
-        IconButton(onClick = { onNudge(-1, 0) }, enabled = across) { Icon(Icons.Rounded.West, contentDescription = stringResource(R.string.edit_move_left)) }
-        IconButton(onClick = { onNudge(0, -1) }, enabled = upDown) { Icon(Icons.Rounded.North, contentDescription = stringResource(R.string.edit_move_up)) }
-        IconButton(onClick = { onNudge(0, 1) }, enabled = upDown) { Icon(Icons.Rounded.South, contentDescription = stringResource(R.string.edit_move_down)) }
-        IconButton(onClick = { onNudge(1, 0) }, enabled = across) { Icon(Icons.Rounded.East, contentDescription = stringResource(R.string.edit_move_right)) }
+        GlyphButton(onClick = { onNudge(-1, 0) }, enabled = across) { Icon(Icons.Rounded.West, contentDescription = stringResource(R.string.edit_move_left)) }
+        GlyphButton(onClick = { onNudge(0, -1) }, enabled = upDown) { Icon(Icons.Rounded.North, contentDescription = stringResource(R.string.edit_move_up)) }
+        GlyphButton(onClick = { onNudge(0, 1) }, enabled = upDown) { Icon(Icons.Rounded.South, contentDescription = stringResource(R.string.edit_move_down)) }
+        GlyphButton(onClick = { onNudge(1, 0) }, enabled = across) { Icon(Icons.Rounded.East, contentDescription = stringResource(R.string.edit_move_right)) }
     }
     FlowRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.Center) {
-        TextButton(onClick = onReset) {
-            Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
+        QuietButton(onClick = onReset, contentPadding = ButtonWithGlyphPadding) {
+            ButtonGlyph(Icons.Rounded.RestartAlt)
             Text(stringResource(R.string.crop_reset))
         }
-        TextButton(onClick = onWhole) {
-            Icon(Icons.Rounded.CropFree, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
+        QuietButton(onClick = onWhole, contentPadding = ButtonWithGlyphPadding) {
+            ButtonGlyph(Icons.Rounded.CropFree)
             Text(stringResource(R.string.crop_whole))
         }
     }
+    // With the step buttons' own 4 above them, Space.gap.
+    Spacer(Modifier.height(Space.gap - 4.dp))
 }
 
 /**
@@ -788,10 +802,12 @@ private fun CropArea(
     // The handle being dragged and where the finger is, while one is.
     var dragging by remember { mutableStateOf<Int?>(null) }
     var finger by remember { mutableStateOf(Offset.Zero) }
-    val outline = MaterialTheme.colorScheme.primary
+    val outline = Usugami.colors.paperInk
     val placeholder = MaterialTheme.colorScheme.surfaceVariant
     val description = stringResource(R.string.crop_image_description)
     val density = LocalDensity.current
+    // Made once rather than in every frame of a drag: the outline's ink purple line, and its lilac line.
+    val outlineStrokes = remember(density) { with(density) { Stroke(4.dp.toPx()) to Stroke(2.dp.toPx()) } }
     BoxWithConstraints(modifier) {
         val room = with(density) { HANDLE_SIZE.toPx() / 2 }
         val areaWidth = constraints.maxWidth.toFloat()
@@ -861,7 +877,9 @@ private fun CropArea(
                 addPath(page)
             }
             drawPath(outside, Color.Black.copy(alpha = 0.45f))
-            drawPath(page, outline, style = Stroke(2.dp.toPx()))
+            // Two tones, as it lies on a photo, dark or light: lilac over ink purple, in both themes.
+            drawPath(page, outline, style = outlineStrokes.first)
+            drawPath(page, OutlineLight, style = outlineStrokes.second)
             for (side in 0..3) {
                 val from = points[side]
                 val to = points[(side + 1) % 4]
@@ -871,7 +889,7 @@ private fun CropArea(
             val held = dragging
             if (held != null && image != null) drawMagnifier(image, frame, rotation, page, at(corners.handle(held)), finger, outline)
         }
-        if (image == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
+        if (image == null) CircularProgress(Modifier.align(Alignment.Center))
 
         // The handles for a screen reader: each is an item named for where it is, chosen by a double
         // tap, with actions that move it (a side only across itself).
@@ -961,7 +979,7 @@ private fun DrawScope.drawSideHandle(center: Offset, along: Offset, chosen: Bool
         val inner = bar(0f)
         drawRoundRect(Color.Black.copy(alpha = 0.3f), outer.topLeft, outer.size, CornerRadius(outer.height / 2))
         drawRoundRect(if (chosen) color else Color.White, inner.topLeft, inner.size, CornerRadius(inner.height / 2))
-        drawRoundRect(if (chosen) Color.White else color, inner.topLeft, inner.size, CornerRadius(inner.height / 2), style = Stroke(2.dp.toPx()))
+        drawRoundRect(if (chosen) Color.White else color, inner.topLeft, inner.size, CornerRadius(inner.height / 2), style = Stroke(2.5.dp.toPx()))
     }
 }
 
@@ -1016,6 +1034,9 @@ private val HANDLE_SIZE = 56.dp
 
 /** How far from a handle a press still takes it. */
 private val HANDLE_REACH = 40.dp
+
+/** The page outline's light line, over its ink purple one: the light theme's lilac, the same in the dark theme. */
+private val OutlineLight = Color(0xFFE8DEF8)
 
 private val MAGNIFIER_RADIUS = 56.dp
 private const val MAGNIFICATION = 2.5f

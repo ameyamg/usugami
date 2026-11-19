@@ -1,23 +1,20 @@
 package io.github.nath_goa.usugami.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
@@ -35,25 +32,14 @@ import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.Print
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -73,7 +59,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -84,8 +69,8 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -95,6 +80,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.nath_goa.usugami.R
 import io.github.nath_goa.usugami.core.EditStyle
 import io.github.nath_goa.usugami.core.ReaderGeometry
+import io.github.nath_goa.usugami.ui.kit.ActionBar
+import io.github.nath_goa.usugami.ui.kit.BarLine
+import io.github.nath_goa.usugami.ui.kit.GlyphButton
+import io.github.nath_goa.usugami.ui.kit.LinearProgress
+import io.github.nath_goa.usugami.ui.kit.MenuItem
+import io.github.nath_goa.usugami.ui.kit.PagePill
+import io.github.nath_goa.usugami.ui.kit.PrimaryButton
+import io.github.nath_goa.usugami.ui.kit.QuietButton
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiDialog
+import io.github.nath_goa.usugami.ui.kit.UsugamiTopBar
+import io.github.nath_goa.usugami.ui.kit.WellField
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -121,7 +118,8 @@ internal class ReaderActions(
 
 /**
  * The reader ([preview] false): the tool slot's PDF in one scroll, zoomed by pinching or double-tapping
- * (see ReaderPages), with the page showing counted at the bottom; tapping the count opens Go to page.
+ * (see ReaderPages), with the page showing counted at the bottom ("3 of 12"; "1-3 of 12" when several
+ * show); tapping the count opens Go to page.
  * Find text turns the top bar into a search bar, which searches from the page showing when the
  * keyboard's search key is pressed and moves between the matches; closing it (its arrow, or Back)
  * takes the matches away. More has Share, Print, Tools, Go to page and Open with another app, those of
@@ -172,8 +170,9 @@ internal fun ReaderScreen(vm: PdfToolsViewModel, preview: Boolean, active: Boole
     var panX by rememberSaveable { mutableFloatStateOf(0f) }
     var goingToPage by rememberSaveable { mutableStateOf(false) }
     // The page Go to page went to (0 for the first), and the list's first item and offset it left: the
-    // indicator says that page while the list stays there, as a page near the end can't come to the top
-    // and the one before it may fill more of the screen.
+    // indicator says that page (or the pages showing, when it is one of them; see pagesShowing) while the
+    // list stays there, as a page near the end can't come to the top and the one before it may fill more
+    // of the screen.
     var wentTo by rememberSaveable { mutableStateOf<IntArray?>(null) }
     // Find text: whether the search bar shows, what is typed in it, and what was searched for last (searched
     // again after Android closed Usugami: a search isn't kept in the saved state).
@@ -265,11 +264,12 @@ internal fun ReaderScreen(vm: PdfToolsViewModel, preview: Boolean, active: Boole
         Scaffold(
             topBar = {
                 if (annotate) {
-                    TopAppBar(
+                    UsugamiTopBar(
                         title = { BarTitle(stringResource(R.string.reader_annotate)) },
                         navigationIcon = {
-                            IconButton(onClick = ::backToReading) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.reader_back_to_reading)) }
+                            GlyphButton(onClick = ::backToReading) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.reader_back_to_reading)) }
                         },
+                        line = BarLine.Always,
                     )
                 } else if (finding && shown != null) {
                     SearchBar(
@@ -288,17 +288,17 @@ internal fun ReaderScreen(vm: PdfToolsViewModel, preview: Boolean, active: Boole
                     )
                 } else {
                     val title = if (preview) shown?.shown?.name else document ?: input?.name
-                    TopAppBar(
+                    UsugamiTopBar(
                         title = { BarTitle(title ?: stringResource(R.string.tool_reader)) },
-                        navigationIcon = { IconButton(onClick = actions.back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back)) } },
+                        navigationIcon = { GlyphButton(onClick = actions.back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back)) } },
                         actions = {
                             if (shown != null) {
-                                IconButton(onClick = {
+                                GlyphButton(onClick = {
                                     finding = true
                                     typing = true
                                 }) { Icon(Icons.Rounded.Search, contentDescription = stringResource(R.string.redact_find)) }
                                 if (!preview) {
-                                    IconButton(onClick = ::startAnnotating) { Icon(Icons.Rounded.EditNote, contentDescription = stringResource(R.string.reader_annotate)) }
+                                    GlyphButton(onClick = ::startAnnotating) { Icon(Icons.Rounded.EditNote, contentDescription = stringResource(R.string.reader_annotate)) }
                                 }
                                 MoreMenu(
                                     open = menu,
@@ -311,29 +311,38 @@ internal fun ReaderScreen(vm: PdfToolsViewModel, preview: Boolean, active: Boole
                                 )
                             }
                         },
+                        line = BarLine.Always,
                     )
                 }
             },
             bottomBar = {
-                Column {
-                    // While text is selected: Copy, over Save PDF when that shows too, which then clears the navigation bar.
-                    if (selecting) ReaderCopyBar(onCopy = { selection?.copy(copyLabel) }, clearNavigationBar = !canSave)
-                    if (canSave) {
-                        Button(
-                            onClick = { vm.runEdit(fileName) },
-                            enabled = !importing && !processing,
-                            // Edge to edge: clear of the navigation bar, as every tool's button.
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .windowInsetsPadding(WindowInsets.navigationBars)
-                                .padding(horizontal = 20.dp, vertical = 10.dp),
+                // Nothing at all while there is neither: the pages then run under the navigation bar.
+                if (selecting || canSave) {
+                    ActionBar(clearNavigationBar = true) {
+                        Column(
+                            Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(stringResource(R.string.pdf_edit_action))
+                            // While text is selected: Copy, over Save PDF when that shows too.
+                            if (selecting) ReaderCopyBar(onCopy = { selection?.copy(copyLabel) })
+                            if (canSave) {
+                                PrimaryButton(
+                                    onClick = { vm.runEdit(fileName) },
+                                    enabled = !importing && !processing,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(stringResource(R.string.pdf_edit_action))
+                                }
+                            }
                         }
                     }
                 }
             },
             snackbarHost = { SnackbarHost(snackbar) },
+            // The action bar's round corners open onto the desk, as the pages' margins do.
+            containerColor = if (shown != null && !annotate) Usugami.colors.desk else MaterialTheme.colorScheme.background,
+            contentColor = MaterialTheme.colorScheme.onBackground,
         ) { padding ->
             val direction = LocalLayoutDirection.current
             // The pages alone run under the navigation bar, and clear it at their end.
@@ -407,11 +416,11 @@ internal fun ReaderScreen(vm: PdfToolsViewModel, preview: Boolean, active: Boole
                             PageIndicator(list, shown.document.pageCount, wentTo, onClick = { goingToPage = true }, modifier = Modifier.align(Alignment.BottomCenter))
                             // How far the search has got, under the search bar: over the pages, so they don't move.
                             if (finding && found.searching) {
-                                LinearProgressIndicator(
+                                LinearProgress(
                                     progress = { found.pagesDone.toFloat() / maxOf(1, shown.document.pageCount) },
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(2.dp)
+                                        .height(3.dp)
                                         .align(Alignment.TopCenter),
                                 )
                             }
@@ -421,10 +430,10 @@ internal fun ReaderScreen(vm: PdfToolsViewModel, preview: Boolean, active: Boole
                 }
                 // The file is being copied for another app (Share, Open with another app): a thin moving bar under the top bar.
                 if (!preview && handingOver) {
-                    LinearProgressIndicator(
+                    LinearProgress(
                         Modifier
                             .fillMaxWidth()
-                            .height(2.dp)
+                            .height(3.dp)
                             .align(Alignment.TopCenter),
                     )
                 }
@@ -494,7 +503,7 @@ private fun MoreMenu(open: MutableState<Boolean>, saveAsPdf: (() -> Unit)?, acti
     @Composable
     fun Item(icon: ImageVector, text: Int, act: (() -> Unit)?) {
         if (act == null) return
-        DropdownMenuItem(
+        MenuItem(
             text = { Text(stringResource(text)) },
             leadingIcon = { Icon(icon, contentDescription = null) },
             onClick = {
@@ -506,7 +515,7 @@ private fun MoreMenu(open: MutableState<Boolean>, saveAsPdf: (() -> Unit)?, acti
         )
     }
     Box {
-        IconButton(onClick = { open.value = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.reader_more)) }
+        GlyphButton(onClick = { open.value = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.reader_more)) }
         DropdownMenu(expanded = open.value, onDismissRequest = { open.value = false }) {
             Item(Icons.Rounded.PictureAsPdf, R.string.reader_save_as_pdf, saveAsPdf)
             Item(Icons.Rounded.Share, R.string.share, actions.share)
@@ -524,17 +533,19 @@ private fun MoreMenu(open: MutableState<Boolean>, saveAsPdf: (() -> Unit)?, acti
  */
 @Composable
 private fun ConvertedNote(name: String, onSave: (() -> Unit)?) {
-    Surface(color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(stringResource(R.string.reader_converted_note, name), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-            if (onSave != null) TextButton(onClick = onSave) { Text(stringResource(R.string.reader_save_as_pdf)) }
-        }
+    val onLilac = Usugami.colors.onLilac
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(Usugami.colors.lilac)
+            // The node its surface was until 3.0, so the tree a device test reads stays as it was (R17).
+            .semantics { isTraversalGroup = true }
+            .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(stringResource(R.string.reader_converted_note, name), style = MaterialTheme.typography.bodySmall, color = onLilac, modifier = Modifier.weight(1f))
+        if (onSave != null) QuietButton(onClick = onSave, contentColor = onLilac) { Text(stringResource(R.string.reader_save_as_pdf)) }
     }
 }
 
@@ -553,14 +564,14 @@ private fun WorkingDialog(marking: BatchProgress?, onCancel: () -> Unit) {
     }
     BackHandler {}
     if (!showing) return
-    AlertDialog(
+    UsugamiDialog(
         onDismissRequest = {},
         // The screen stays on while it shows, as for every job (see ProgressDialog).
         modifier = Modifier.keepScreenOn(),
         title = { Text(stringResource(if (marking != null) R.string.mark_adding else R.string.pdf_working)) },
-        text = { LinearProgressIndicator(Modifier.fillMaxWidth()) },
+        text = { LinearProgress(Modifier.fillMaxWidth()) },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onCancel) { Text(stringResource(R.string.cancel)) } },
+        dismissButton = { QuietButton(onClick = onCancel) { Text(stringResource(R.string.cancel)) } },
     )
 }
 
@@ -578,22 +589,45 @@ private fun Opening(onCancel: () -> Unit, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(stringResource(R.string.reader_opening), style = MaterialTheme.typography.titleMedium)
-        LinearProgressIndicator(Modifier.fillMaxWidth())
-        TextButton(onClick = onCancel) { Text(stringResource(R.string.cancel)) }
+        LinearProgress(Modifier.fillMaxWidth())
+        QuietButton(onClick = onCancel) { Text(stringResource(R.string.cancel)) }
     }
 }
 
 /**
- * The page showing (0 for the first), as the page indicator says it: the one that fills most of the
- * screen, or the page Go to page went to ([wentTo]: that page, and the list's first item and offset
- * it left) while the list stays there. Before the pages are laid out, the list's first item.
+ * The page showing (0 for the first), where Find text searches from and the page Annotate opens on:
+ * the one that fills most of the screen, or the page Go to page went to ([wentTo]: that page, and the
+ * list's first item and offset it left) while the list stays there. Before the pages are laid out,
+ * the list's first item. The page indicator says the pages showing (pagesShowing).
  */
 private fun pageShowing(list: LazyListState, wentTo: IntArray?): Int {
     val info = list.layoutInfo
-    val items = info.visibleItemsInfo.map { ReaderGeometry.Item(it.index, it.offset - info.viewportStartOffset, it.size) }
-    return wentTo?.takeIf { it[1] == list.firstVisibleItemIndex && it[2] == list.firstVisibleItemScrollOffset }?.get(0)
-        ?: ReaderGeometry.pageInView(items, info.viewportEndOffset - info.viewportStartOffset)
+    return pageWentTo(list, wentTo)
+        ?: ReaderGeometry.pageInView(pageItems(list), info.viewportEndOffset - info.viewportStartOffset)
         ?: list.firstVisibleItemIndex
+}
+
+/**
+ * The pages showing (0 for the first), as the page indicator says them: from the first to the last
+ * page at least half of which shows, or that fills at least half of the screen (a page zoomed in).
+ * While the list stays where Go to page left it ([wentTo], see pageShowing), the page it went to
+ * alone when it isn't one of them; when none is, the page pageShowing gives alone.
+ */
+private fun pagesShowing(list: LazyListState, wentTo: IntArray?): IntRange {
+    val info = list.layoutInfo
+    val pages = ReaderGeometry.pagesInView(pageItems(list), info.viewportEndOffset - info.viewportStartOffset)
+    val asked = pageWentTo(list, wentTo)
+    return if (pages != null && (asked == null || asked in pages)) pages else pageShowing(list, wentTo).let { it..it }
+}
+
+/** The page Go to page went to ([wentTo]: that page, and the list's first item and offset it left), while the list stays there. */
+private fun pageWentTo(list: LazyListState, wentTo: IntArray?): Int? =
+    wentTo?.takeIf { it[1] == list.firstVisibleItemIndex && it[2] == list.firstVisibleItemScrollOffset }?.get(0)
+
+/** The pages the list lays out, their tops from the top of what it shows (list pixels). */
+private fun pageItems(list: LazyListState): List<ReaderGeometry.Item> {
+    val info = list.layoutInfo
+    return info.visibleItemsInfo.map { ReaderGeometry.Item(it.index, it.offset - info.viewportStartOffset, it.size) }
 }
 
 /**
@@ -607,23 +641,18 @@ private fun pageShowing(list: LazyListState, wentTo: IntArray?): Int {
 private fun SearchBar(query: String, onQuery: (String) -> Unit, onSearch: () -> Unit, found: Found, onStep: (Int) -> Unit, onClose: () -> Unit, takeFocus: Boolean) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { if (takeFocus) focus.requestFocus() }
-    TopAppBar(
-        navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.reader_find_close)) } },
+    UsugamiTopBar(
+        navigationIcon = { GlyphButton(onClick = onClose) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.reader_find_close)) } },
         title = {
-            TextField(
+            WellField(
                 value = query,
                 onValueChange = onQuery,
                 placeholder = { Text(stringResource(R.string.reader_find_hint), maxLines = 1) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSearch() }),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    disabledContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                ),
+                textStyle = MaterialTheme.typography.bodyLarge,
+                compact = true,
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(focus),
@@ -635,7 +664,7 @@ private fun SearchBar(query: String, onQuery: (String) -> Unit, onSearch: () -> 
                 val spoken = stringResource(R.string.reader_find_count_spoken, found.current + 1, count)
                 Text(
                     stringResource(R.string.reader_find_count, found.current + 1, count),
-                    style = MaterialTheme.typography.labelLarge,
+                    style = Usugami.type.tabular(MaterialTheme.typography.labelLarge),
                     maxLines = 1,
                     modifier = Modifier
                         .padding(horizontal = 4.dp)
@@ -644,43 +673,40 @@ private fun SearchBar(query: String, onQuery: (String) -> Unit, onSearch: () -> 
                             liveRegion = LiveRegionMode.Polite
                         },
                 )
-                IconButton(onClick = { onStep(-1) }) { Icon(Icons.Rounded.KeyboardArrowUp, contentDescription = stringResource(R.string.reader_find_previous)) }
-                IconButton(onClick = { onStep(1) }) { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = stringResource(R.string.reader_find_next)) }
+                GlyphButton(onClick = { onStep(-1) }) { Icon(Icons.Rounded.KeyboardArrowUp, contentDescription = stringResource(R.string.reader_find_previous)) }
+                GlyphButton(onClick = { onStep(1) }) { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = stringResource(R.string.reader_find_next)) }
             }
         },
+        line = BarLine.Always,
     )
 }
 
 /**
- * The page showing, of [pageCount]: "3 of 12", heard as "Page 3 of 12". Tapped, it opens Go to page
- * ([onClick]). After Go to page, the page it went to while the list stays where it left it ([wentTo]:
- * the page, the list's first item and its offset).
+ * The page showing, of [pageCount]: "3 of 12", heard as "Page 3 of 12"; or, when several show
+ * (pagesShowing), the first and last of them: "1-3 of 12", heard as "Pages 1 to 3 of 12". Tapped, it
+ * opens Go to page ([onClick]). After Go to page, the page it went to while the list stays where it
+ * left it ([wentTo]: the page, the list's first item and its offset), unless it is one of the pages showing.
  */
 @Composable
 private fun PageIndicator(list: LazyListState, pageCount: Int, wentTo: IntArray?, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val asked by rememberUpdatedState(wentTo)
-    val page by remember(list) { derivedStateOf { pageShowing(list, asked) } }
-    val number = (page + 1).coerceIn(1, maxOf(1, pageCount))
-    val spoken = stringResource(R.string.reader_page_of_spoken, number, pageCount)
-    Surface(
-        shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.inverseSurface,
-        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-        modifier = modifier
+    val pages by remember(list) { derivedStateOf { pagesShowing(list, asked) } }
+    val most = maxOf(1, pageCount)
+    val first = (pages.first + 1).coerceIn(1, most)
+    val last = (pages.last + 1).coerceIn(first, most)
+    val text = if (last > first) stringResource(R.string.reader_pages_of, first, last, pageCount) else stringResource(R.string.reader_page_of, first, pageCount)
+    val spoken = if (last > first) stringResource(R.string.reader_pages_of_spoken, first, last, pageCount) else stringResource(R.string.reader_page_of_spoken, first, pageCount)
+    // A button of one node: a screen reader says "Page 3 of 12, button, double-tap to go to page" ("Pages 1
+    // to 3 of 12, …" when several show). Touches a little around it count too (Compose's minimum touch target).
+    PagePill(
+        text,
+        spoken,
+        stringResource(R.string.reader_go_to_page),
+        onClick,
+        modifier
             .navigationBarsPadding()
             .padding(bottom = 12.dp),
-    ) {
-        Text(
-            stringResource(R.string.reader_page_of, number, pageCount),
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier
-                // A button: a screen reader says "Page 3 of 12, button, double-tap to go to page". Touches a
-                // little around it count too (Compose's minimum touch target); the pill's shape clips the ripple.
-                .clickable(onClickLabel = stringResource(R.string.reader_go_to_page), role = Role.Button, onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 6.dp)
-                .semantics { contentDescription = spoken },
-        )
-    }
+    )
 }
 
 /** Go to page: a page number from 1 to [pageCount], and Go, on only while the number is one of them. */
@@ -690,11 +716,11 @@ private fun GoToPageDialog(pageCount: Int, onGo: (page: Int) -> Unit, onDismiss:
     val page = text.toIntOrNull()?.takeIf { it in 1..pageCount }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
-    AlertDialog(
+    UsugamiDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.reader_go_to_page)) },
         text = {
-            OutlinedTextField(
+            WellField(
                 value = text,
                 // Digits only, few enough for a number.
                 onValueChange = { typed -> text = typed.filter(Char::isDigit).take(9) },
@@ -707,7 +733,7 @@ private fun GoToPageDialog(pageCount: Int, onGo: (page: Int) -> Unit, onDismiss:
                     .focusRequester(focus),
             )
         },
-        confirmButton = { TextButton(onClick = { page?.let(onGo) }, enabled = page != null) { Text(stringResource(R.string.reader_go)) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+        confirmButton = { QuietButton(onClick = { page?.let(onGo) }, enabled = page != null) { Text(stringResource(R.string.reader_go)) } },
+        dismissButton = { QuietButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )
 }

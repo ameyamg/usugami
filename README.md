@@ -30,7 +30,7 @@ Use Obtainium? Its badge adds Usugami with automatic updates. On Android 8.0 or 
 
 | | **Usugami** (recommended) | **Usugami Lite** | **Usugami OCR** |
 |---|---|---|---|
-| Download | **[Usugami.apk](https://github.com/Nath-Goa/usugami/releases/latest/download/Usugami.apk)**, about 5.1 MB | **[Usugami-lite.apk](https://github.com/Nath-Goa/usugami/releases/latest/download/Usugami-lite.apk)**, about 4.7 MB | **[Usugami-ocr.apk](https://github.com/Nath-Goa/usugami/releases/latest/download/Usugami-ocr.apk)**, about 16 MB: the recognition engine and models are inside |
+| Download | **[Usugami.apk](https://github.com/Nath-Goa/usugami/releases/latest/download/Usugami.apk)**, about 5.1 MB | **[Usugami-lite.apk](https://github.com/Nath-Goa/usugami/releases/latest/download/Usugami-lite.apk)**, about 4.8 MB | **[Usugami-ocr.apk](https://github.com/Nath-Goa/usugami/releases/latest/download/Usugami-ocr.apk)**, about 16 MB: the recognition engine and models are inside |
 | Downloads | [![Usugami downloads](https://img.shields.io/github/downloads/Nath-Goa/usugami/Usugami.apk?logo=github&label=all%20versions)](https://github.com/Nath-Goa/usugami/releases) | [![Usugami Lite downloads](https://img.shields.io/github/downloads/Nath-Goa/usugami/Usugami-lite.apk?logo=github&label=all%20versions)](https://github.com/Nath-Goa/usugami/releases) | [![Usugami OCR downloads](https://img.shields.io/github/downloads/Nath-Goa/usugami/Usugami-ocr.apk?logo=github&label=all%20versions)](https://github.com/Nath-Goa/usugami/releases) |
 | The reader, images, Word, PowerPoint, Excel and EPUB to PDF, and every PDF tool | Fully offline | Fully offline | Fully offline |
 | Text recognition (OCR) for searchable PDFs and scanned pages | Runs on your phone through Google Play services, which downloads Google's text-recognition model the first time you use it. | Not included | Open source and built into the app ([PaddleOCR](#how-usugami-ocr-reads-text) models). Works with no internet, forever. |
@@ -66,13 +66,26 @@ signed with the same key, so you can switch between F-Droid, GitHub and Obtainiu
 reinstalling. A listing in the main F-Droid repository is planned; the builds are
 [reproducible](https://f-droid.org/docs/Reproducible_Builds/) for that.
 
-## What's new in 2.0.1
+## What's new in 3.0.0
 
-Settings → **Donate** shows how to donate through
-[GitHub Sponsors](https://github.com/sponsors/Nath-Goa), in four steps: open Usugami's page on
-GitHub, tap **Sponsor**, choose your amount and pay.
+**A new look.** Usugami now looks like the thin paper it is named after: a pale lilac ground with
+lighter sheets on it and ink purple in place of red, in a light and a dark theme. Every tool and
+feature is still there and works as before.
 
-2.0.0, the day before, was the biggest update yet:
+- **Home** shows its tools as rows on one sheet under each heading, with Scan document on top.
+- **Every PDF tool** keeps its main button at the foot of the screen, and a page is shown as real
+  white paper wherever one appears.
+- **The result screen** says what was made in a large headline, with the file lying on its pages
+  under a round seal.
+- **The reader's page count** gives every page showing: "1-3 of 3" with three whole pages on the
+  screen.
+- **A new app icon:** a deep-purple disc, like a moon, partly covered by a tilted sheet of thin
+  paper.
+
+2.0.1, four days before: Settings → **Donate** shows how to donate through
+[GitHub Sponsors](https://github.com/sponsors/Nath-Goa), in four steps.
+
+2.0.0, the day before that, was the biggest update yet:
 
 - **Read and annotate:** Usugami is now in Android's "Open with" list for PDF, Word, Excel,
   PowerPoint and EPUB files, and opens them in its own reader: pages in one scroll, pinch or
@@ -347,8 +360,10 @@ old "PDFer".
   in Choose a tool for a PDF shared to Usugami.
 - The pages show one under another in one scroll, at the screen's width, in their own colours (white
   in the dark theme too), turned and cropped as viewers show them, with comments and filled-in form
-  fields drawn. "3 of 12" at the bottom says where you are; tap it to go to a page. A
-  password-protected PDF asks for its password once.
+  fields drawn. "3 of 12" at the bottom says where you are; when several pages show, as zoomed out,
+  it gives them all ("1-3 of 12"), counting each page at least half on the screen (or, zoomed in,
+  filling at least half of it). Tap it to go to a page. A password-protected PDF asks for its
+  password once.
 - **Zoom:** pinch with two fingers, from half size to five times, or double-tap to zoom in on a spot
   and again to go back. Zoomed in, one finger moves the page any way, and once it stops the part on
   the screen is drawn again sharp, so small print can be read at any zoom.
@@ -1024,7 +1039,7 @@ again.
 <details>
 <summary><b>How much storage does Usugami use?</b></summary>
 
-The app takes about 5.1 MB to download (Usugami Lite about 4.7 MB, and Usugami OCR about 16 MB,
+The app takes about 5.1 MB to download (Usugami Lite about 4.8 MB, and Usugami OCR about 16 MB,
 since its recognition engine and models are inside). A file you open in the reader is copied into
 Usugami's cache while it is open, so a very large one needs that much free storage.
 While you work, Usugami keeps temporary copies of your files in its cache and deletes them

@@ -10,11 +10,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.core.updateTransition
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -30,9 +30,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -65,6 +67,9 @@ import io.github.nath_goa.usugami.data.PdfSaver
 import io.github.nath_goa.usugami.data.RecentFiles
 import io.github.nath_goa.usugami.data.office.DocumentSorter
 import io.github.nath_goa.usugami.data.office.OfficeKind
+import io.github.nath_goa.usugami.ui.kit.QuietButton
+import io.github.nath_goa.usugami.ui.kit.Usugami
+import io.github.nath_goa.usugami.ui.kit.UsugamiDialog
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -761,6 +766,14 @@ fun UsugamiApp(
 
     var showConvertSheet by rememberSaveable { mutableStateOf(false) }
 
+    // A result's arrival plays once: not again after its preview, a rotation or Android restarting Usugami.
+    // Images to PDF's result and the PDF tools' result each have their own, so one that arrives while the
+    // other is still held plays its arrival too.
+    var resultGreeted by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(result == null) { if (result == null) resultGreeted = false }
+    var pdfResultGreeted by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(pdfResult == null) { if (pdfResult == null) pdfResultGreeted = false }
+
     // Which screen is showing. The result screens sit one level deeper than their editors, which
     // sit one level deeper than home, and so do Recent files ("recent"), Settings ("settings"), About
     // ("settings/about") and Donate ("settings/donate"), and the texts About opens
@@ -795,8 +808,9 @@ fun UsugamiApp(
     // Where shared files are going, for the screen they open in to say more are coming.
     val receivingFor = if (reading != null) "reader" else sharedRoute(SharedFiles.chosen(sharedFiles.map { it.kind }) ?: sharing)
 
-    AnimatedContent(
-        targetState = Shown(
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val screens = updateTransition(
+        Shown(
             screen,
             when {
                 screen.endsWith("/view") -> previewOpening
@@ -805,8 +819,17 @@ fun UsugamiApp(
                 else -> 0
             },
         ),
-        transitionSpec = { Motion.screenTransition(forward = screenDepth(targetState.screen) >= screenDepth(initialState.screen)) },
         label = "screen",
+    )
+    screens.AnimatedContent(
+        modifier = Modifier.background(Usugami.colors.screenDim),
+        transitionSpec = {
+            Motion.screenTransition(
+                forward = screenDepth(targetState.screen) >= screenDepth(initialState.screen),
+                depth = screenDepth(targetState.screen),
+                rtl = rtl,
+            )
+        },
     ) { shown ->
         val current = shown.screen.removePrefix("share/")
         // While a screen animates away it must not handle Back or touches, and it keeps showing
@@ -814,8 +837,12 @@ fun UsugamiApp(
         // pressed through the screen reader, and parts of it the new screen doesn't cover yet
         // would be read out with the new screen.
         val active = transition.targetState == EnterExitState.Visible
+        // A screen that came over the one before slides in, decided once as it is first shown. Only its
+        // picture moves: it is in its place from the first frame.
+        val cameOver = remember { screens.segment.let { screenDepth(it.targetState.screen) >= screenDepth(it.initialState.screen) } }
+        val away = slideInProgress(cameOver)
         val screenSnackbar = if (active) snackbar else idleSnackbar
-        Box(if (active) Modifier else Modifier.clearAndSetSemantics {}) {
+        Box(Modifier.screenSlide(away, rtl).then(if (active) Modifier else Modifier.clearAndSetSemantics {})) {
             if (current == "home" || current == "recent") {
                 // The files listed are looked over while they show, once each time Usugami comes back.
                 LaunchedEffect(recent, lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { recent.check() } }
@@ -1081,6 +1108,8 @@ fun UsugamiApp(
                         mark = mark,
                         marking = marking,
                         markPreview = markPreview,
+                        greeted = resultGreeted,
+                        onGreeted = { resultGreeted = true },
                     )
                 }
                 current.endsWith("/result") -> {
@@ -1147,6 +1176,8 @@ fun UsugamiApp(
                         marking = pdfMarking,
                         markPreview = pdfMarkPreview,
                         text = textPreviewOf(files),
+                        greeted = pdfResultGreeted,
+                        onGreeted = { pdfResultGreeted = true },
                     )
                 }
                 else -> {
@@ -1284,42 +1315,42 @@ fun UsugamiApp(
         if ((route != "home" && route != "recent") || recentFiles.none { it.uri == lostFile }) lostFile = null
     }
     recentFiles.firstOrNull { it.uri == lostFile }?.let { file ->
-        AlertDialog(
+        UsugamiDialog(
             onDismissRequest = { lostFile = null },
             title = { Text(stringResource(R.string.recent_lost_title)) },
             text = { Text(stringResource(R.string.recent_lost_body, file.name)) },
             confirmButton = {
-                TextButton(onClick = {
+                QuietButton(onClick = {
                     lostFile = null
                     recent.remove(file)
                 }) { Text(stringResource(R.string.recent_remove)) }
             },
-            dismissButton = { TextButton(onClick = { lostFile = null }) { Text(stringResource(R.string.keep)) } },
+            dismissButton = { QuietButton(onClick = { lostFile = null }) { Text(stringResource(R.string.keep)) } },
         )
     }
 
     if (confirmDiscard && route == "images") {
-        AlertDialog(
+        UsugamiDialog(
             onDismissRequest = { confirmDiscard = false },
             title = { Text(stringResource(R.string.discard_title)) },
             text = { Text(stringResource(R.string.discard_body)) },
             confirmButton = {
-                TextButton(onClick = {
+                QuietButton(danger = true, onClick = {
                     confirmDiscard = false
                     vm.clearAll()
                     route = "home"
                 }) { Text(stringResource(R.string.discard)) }
             },
-            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text(stringResource(R.string.keep)) } },
+            dismissButton = { QuietButton(onClick = { confirmDiscard = false }) { Text(stringResource(R.string.keep)) } },
         )
     }
 
     discardWork?.let { action ->
-        AlertDialog(
+        UsugamiDialog(
             onDismissRequest = { discardWork = null },
             title = { Text(stringResource(R.string.tool_discard_title)) },
             confirmButton = {
-                TextButton(onClick = {
+                QuietButton(danger = true, onClick = {
                     discardWork = null
                     when (action) {
                         "leave" -> exitTool()
@@ -1328,7 +1359,7 @@ fun UsugamiApp(
                     }
                 }) { Text(stringResource(R.string.discard)) }
             },
-            dismissButton = { TextButton(onClick = { discardWork = null }) { Text(stringResource(R.string.keep)) } },
+            dismissButton = { QuietButton(onClick = { discardWork = null }) { Text(stringResource(R.string.keep)) } },
         )
     }
 
@@ -1343,7 +1374,7 @@ fun UsugamiApp(
         val notPdf = pdfResult?.none { it.isPdf } == true
         // A file opened, rather than shared, is said to be so.
         val opened = reading != null
-        AlertDialog(
+        UsugamiDialog(
             onDismissRequest = keepPdf,
             title = {
                 Text(
@@ -1368,7 +1399,7 @@ fun UsugamiApp(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
+                QuietButton(danger = true, onClick = {
                     // Once: a second tap before the dialog has gone finds it answered.
                     if (confirmShare) {
                         confirmShare = false
@@ -1376,7 +1407,7 @@ fun UsugamiApp(
                     }
                 }) { Text(stringResource(R.string.discard)) }
             },
-            dismissButton = { TextButton(onClick = keepPdf) { Text(stringResource(R.string.keep)) } },
+            dismissButton = { QuietButton(onClick = keepPdf) { Text(stringResource(R.string.keep)) } },
         )
     }
 
@@ -1387,7 +1418,7 @@ fun UsugamiApp(
         // file made, in words of their own.
         val changes = pdfResult == null
         val notPdf = pdfResult?.none { it.isPdf } == true
-        AlertDialog(
+        UsugamiDialog(
             onDismissRequest = { confirmShortcut = null },
             title = {
                 Text(
@@ -1412,7 +1443,7 @@ fun UsugamiApp(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
+                QuietButton(danger = true, onClick = {
                     // Once: a second tap before the dialog has gone finds it answered.
                     if (confirmShortcut != null) {
                         confirmShortcut = null
@@ -1420,7 +1451,7 @@ fun UsugamiApp(
                     }
                 }) { Text(stringResource(R.string.discard)) }
             },
-            dismissButton = { TextButton(onClick = { confirmShortcut = null }) { Text(stringResource(R.string.keep)) } },
+            dismissButton = { QuietButton(onClick = { confirmShortcut = null }) { Text(stringResource(R.string.keep)) } },
         )
     }
     // Files or images shared meanwhile bring their own question, which takes this one's place: two
@@ -1439,7 +1470,7 @@ fun UsugamiApp(
         // known yet: the PDF's words stay).
         val changes = pdfResult == null && !pdfProcessing
         val notPdf = pdfResult?.none { it.isPdf } == true
-        AlertDialog(
+        UsugamiDialog(
             onDismissRequest = keepPdf,
             title = {
                 Text(
@@ -1464,13 +1495,13 @@ fun UsugamiApp(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
+                QuietButton(danger = true, onClick = {
                     confirmLeavePdf = false
                     // The editor frees the tool's files once it has opened.
                     route = "images"
                 }) { Text(stringResource(R.string.discard)) }
             },
-            dismissButton = { TextButton(onClick = keepPdf) { Text(stringResource(R.string.keep)) } },
+            dismissButton = { QuietButton(onClick = keepPdf) { Text(stringResource(R.string.keep)) } },
         )
     }
 }
