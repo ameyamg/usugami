@@ -6,6 +6,18 @@ All notable changes to Usugami are listed here. The format is based on
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-11-27
+
+### Changed
+
+- Settings → **Donate** opens a page with the four steps to donate through
+  [Buy Me a Coffee](https://buymeacoffee.com/usugami): open Usugami's page there (its button opens
+  it in your browser), choose how many coffees to buy, add your name and a message if you like,
+  and tap Support to pay. Under the steps, **Donate with GitHub Sponsors instead** opens the four
+  steps for [GitHub Sponsors](https://github.com/sponsors/Nath-Goa), which were on this page
+  before. The Sponsor button on Usugami's GitHub page lists Buy Me a Coffee too, and the F-Droid
+  listings' Donate link goes there. Usugami itself still has no internet permission.
+
 ## [3.0.1] - 2026-11-20
 
 ### Changed
@@ -1098,7 +1110,8 @@ Private test build, named PDFer (package `com.nathan.pdfer`), not published.
 - Open, Share, Save to Downloads, or Save as… to any folder.
 - No internet permission: nothing is uploaded.
 
-[Unreleased]: https://github.com/Nath-Goa/usugami/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/Nath-Goa/usugami/compare/v3.0.2...HEAD
+[3.0.2]: https://github.com/Nath-Goa/usugami/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/Nath-Goa/usugami/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/Nath-Goa/usugami/compare/v2.0.1...v3.0.0
 [2.0.1]: https://github.com/Nath-Goa/usugami/compare/v2.0.0...v2.0.1
