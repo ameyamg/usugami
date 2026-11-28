@@ -1,5 +1,92 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Standard edition: Google Play services downloads each language's text recognition the first time it is used. -->
     <string name="ocr_detail">Reconnaître les mots figurant sur ces images et ajouter du texte recherchable au PDF. La première fois que vous utilisez une langue, sa reconnaissance de texte est téléchargée, ce qui nécessite une connexion Internet.</string>
+    <string name="about_privacy">Pas de publicité, pas de suivi, pas de compte. Vos fichiers ne quittent jamais votre téléphone. Usugami n\'a l\'autorisation d\'accéder à Internet que pour télécharger les packs de langue de Traduire un PDF.</string>
+    <string name="about_privacy_standard">La reconnaissance de texte est fournie par les services Google Play, qui téléchargent le modèle de chaque langue lors de sa première utilisation. Les services Google Play peuvent aussi envoyer à Google des statistiques sur l\'utilisation de la reconnaissance de texte et de Traduire un PDF, mais jamais vos fichiers ni leur texte. Usugami Lite et Usugami OCR n\'utilisent pas les services Google Play.</string>
+
+    <string name="translate_title">Traduire un PDF</string>
+    <string name="translate_detail">Lire un PDF dans une autre langue</string>
+    <string name="translate_keywords">traduire, traduction, traducteur, langue, langues, langue étrangère, interpréter, interprète, bilingue, anglais, français, espagnol, allemand, arabe, chinois, japonais, translate</string>
+    <string name="translate_action">Traduire le PDF</string>
+
+    <string name="translate_languages">Langues</string>
+    <string name="translate_from">De</string>
+    <string name="translate_to">Vers</string>
+    <string name="translate_detecting">Détection…</string>
+    <string name="translate_choose">Choisir</string>
+    <string name="translate_detected">Langue détectée d\'après le texte du PDF.</string>
+    <string name="translate_not_detected">Usugami n\'a pas pu déterminer la langue de ce PDF. Choisissez-la.</string>
+    <string name="translate_same">Choisissez deux langues différentes.</string>
+    <string name="translate_packs">Packs de langue</string>
+    <plurals name="translate_packs_ready" tools:ignore="ImpliedQuantity">
+        <item quantity="one">Le pack %1$s est sur ce téléphone : la traduction se fait sans Internet.</item>
+        <item quantity="many">Les packs %1$s sont sur ce téléphone : la traduction se fait sans Internet.</item>
+        <item quantity="other">Les packs %1$s sont sur ce téléphone : la traduction se fait sans Internet.</item>
+    </plurals>
+    <plurals name="translate_packs_needed" tools:ignore="ImpliedQuantity">
+        <item quantity="one">Nécessite le pack %1$s, environ 40 Mo. Il se télécharge une seule fois ; ensuite, la traduction se fait sans Internet.</item>
+        <item quantity="many">Nécessite les packs %1$s, environ 40 Mo chacun. Ils se téléchargent une seule fois ; ensuite, la traduction se fait sans Internet.</item>
+        <item quantity="other">Nécessite les packs %1$s, environ 40 Mo chacun. Ils se téléchargent une seule fois ; ensuite, la traduction se fait sans Internet.</item>
+    </plurals>
+    <string name="translate_pages_hint" tools:ignore="TypographyDashes">Laissez vide pour toutes les pages. Ou saisissez des numéros, comme 1,3,5-8, ou touchez les aperçus.</string>
+    <string name="translate_pages_all">À traduire : toutes les pages</string>
+    <string name="translate_pages_count">À traduire : %1$d sur %2$d</string>
+    <string name="translate_scans_note">Les pages numérisées (images de texte) sont d\'abord lues par la reconnaissance de texte. Elle lit les langues écrites en alphabet latin, ainsi que le hindi et le marathi. Elle est téléchargée lors de sa première utilisation, ce qui nécessite une connexion Internet.</string>
+
+    <string name="translate_packs_intro">Chaque pack fait environ 40 Mo. Avec les packs présents sur ce téléphone, la traduction se fait sans Internet.</string>
+    <string name="translate_packs_none">Aucun pack de langue sur ce téléphone. Ils se téléchargent lorsqu\'une traduction en a besoin.</string>
+    <string name="translate_pack_delete">Supprimer le pack %1$s</string>
+    <string name="translate_pack_delete_title">Supprimer le pack %1$s ?</string>
+    <string name="translate_pack_delete_body">Il sera de nouveau téléchargé (environ 40 Mo) la prochaine fois qu\'une traduction en aura besoin.</string>
+    <string name="translate_pack_delete_confirm">Supprimer</string>
+    <string name="translate_pack_delete_failed">Impossible de supprimer le pack de langue. Réessayez.</string>
+
+    <plurals name="translate_download_title" tools:ignore="ImpliedQuantity">
+        <item quantity="one">Télécharger un pack de langue ?</item>
+        <item quantity="many">Télécharger des packs de langue ?</item>
+        <item quantity="other">Télécharger des packs de langue ?</item>
+    </plurals>
+    <plurals name="translate_download_body" tools:ignore="ImpliedQuantity">
+        <item quantity="one">Pour traduire, il faut d\'abord télécharger le pack %1$s : environ 40 Mo, par Internet. Cela n\'a lieu qu\'une fois ; ensuite, la traduction se fait sans Internet.</item>
+        <item quantity="many">Pour traduire, il faut d\'abord télécharger les packs %1$s : environ 40 Mo chacun, par Internet. Cela n\'a lieu qu\'une fois ; ensuite, la traduction se fait sans Internet.</item>
+        <item quantity="other">Pour traduire, il faut d\'abord télécharger les packs %1$s : environ 40 Mo chacun, par Internet. Cela n\'a lieu qu\'une fois ; ensuite, la traduction se fait sans Internet.</item>
+    </plurals>
+    <string name="translate_download_confirm">Télécharger et traduire</string>
+
+    <string name="translate_downloading_one">Téléchargement du pack %1$s…</string>
+    <string name="translate_downloading">Téléchargement des packs de langue…</string>
+    <string name="translate_download_note">Cela n\'a lieu qu\'une fois et nécessite une connexion Internet.</string>
+    <string name="translate_progress_page" tools:ignore="PluralsCandidate">Traduction de la page\u00A0%1$d sur %2$d</string>
+
+    <string name="translate_problem_title">Traduction impossible pour le moment</string>
+    <string name="translate_problem_no_internet">Les packs de langue nécessaires doivent être téléchargés, et ce téléphone n\'est pas connecté à Internet. Connectez-vous et réessayez.</string>
+    <string name="translate_problem_download">Impossible de télécharger les packs de langue. Vérifiez votre connexion Internet et réessayez.</string>
+    <string name="translate_problem_storage">L\'espace de stockage disponible est insuffisant pour les packs de langue. Libérez de l\'espace et réessayez.</string>
+    <string name="translate_problem_failed">Impossible de lancer la traduction. Réessayez.</string>
+    <string name="translate_ocr_retry">Pour traduire dès maintenant les pages qui contiennent du texte, indiquez uniquement celles-ci dans « Pages » et réessayez.</string>
+    <string name="translate_none">Ces pages ne contiennent aucun texte à traduire.</string>
+    <string name="translate_none_unreadable">Ces pages semblent numérisées et leur texte n\'a pas pu être lu : il n\'y a rien à traduire.</string>
+    <string name="translate_unavailable">La traduction n\'est pas disponible sur ce téléphone.</string>
+
+    <plurals name="translate_note_no_text" tools:ignore="ImpliedQuantity">
+        <item quantity="one">La page %2$s ne contenait aucun texte à traduire et reste telle quelle.</item>
+        <item quantity="many">%1$d pages ne contenaient aucun texte à traduire et restent telles quelles : %2$s.</item>
+        <item quantity="other">%1$d pages ne contenaient aucun texte à traduire et restent telles quelles : %2$s.</item>
+    </plurals>
+    <plurals name="translate_note_unread_language" tools:ignore="ImpliedQuantity">
+        <item quantity="one">La page %2$s semble numérisée et reste telle quelle, car la reconnaissance de texte ne lit pas cette langue.</item>
+        <item quantity="many">%1$d pages semblent numérisées et restent telles quelles, car la reconnaissance de texte ne lit pas cette langue : %2$s.</item>
+        <item quantity="other">%1$d pages semblent numérisées et restent telles quelles, car la reconnaissance de texte ne lit pas cette langue : %2$s.</item>
+    </plurals>
+    <plurals name="translate_note_unread_failed" tools:ignore="ImpliedQuantity">
+        <item quantity="one">La page %2$s semble numérisée et reste telle quelle, car la reconnaissance de texte n\'a pas pu la lire.</item>
+        <item quantity="many">%1$d pages semblent numérisées et restent telles quelles, car la reconnaissance de texte n\'a pas pu les lire : %2$s.</item>
+        <item quantity="other">%1$d pages semblent numérisées et restent telles quelles, car la reconnaissance de texte n\'a pas pu les lire : %2$s.</item>
+    </plurals>
+    <plurals name="translate_note_partly" tools:ignore="ImpliedQuantity">
+        <item quantity="one">Sur la page %2$s, une partie du texte est restée telle quelle : elle n\'a pas pu être traduite, ou ce téléphone n\'a pas de police pour cette langue.</item>
+        <item quantity="many">Sur %1$d pages, une partie du texte est restée telle quelle, faute de traduction ou de police pour cette langue sur ce téléphone : %2$s.</item>
+        <item quantity="other">Sur %1$d pages, une partie du texte est restée telle quelle, faute de traduction ou de police pour cette langue sur ce téléphone : %2$s.</item>
+    </plurals>
 </resources>

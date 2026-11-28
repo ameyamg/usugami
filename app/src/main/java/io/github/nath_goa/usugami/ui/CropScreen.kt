@@ -5,7 +5,10 @@ import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.updateTransition
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -36,9 +39,9 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CropFree
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.East
 import androidx.compose.material.icons.rounded.North
-import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.South
 import androidx.compose.material.icons.rounded.West
@@ -51,6 +54,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -98,6 +102,7 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -148,12 +153,15 @@ class CropChoices(
 
 /**
  * What the crop screen's buttons do: [done] finishes the page (an image of a scan goes on to the
- * next), [takeAnother] finishes a photo just taken and opens the camera again, and [close] leaves.
+ * next), and [close] leaves. On a scan's image, [back] goes to the image before, [discard] discards
+ * a photo and [stop] stops cropping images picked, leaving the rest as they are.
  */
 class CropActions(
     val done: (CropChoices) -> Unit,
-    val takeAnother: (CropChoices) -> Unit,
     val close: () -> Unit,
+    val back: () -> Unit,
+    val discard: () -> Unit,
+    val stop: () -> Unit,
 )
 
 /**
@@ -163,10 +171,11 @@ class CropActions(
  * each handle, with the same moves as actions). Then its look: the page straightened as it will be,
  * the looks to choose from, its brightness and contrast (see [FilterStep]). On both, Rotate left and
  * right in the bar turn the image, the corners with it. Back on the second step goes back to the
- * first, with the corners kept. A photo just taken can be finished with Take another, and leaving
- * discards it; the images of a scan ([scan]) come one after another, and while the next is awaited
- * the screen says so. An ID card's side says which side it is, and speaks of the card; one the ID
- * card flow is adding is discarded when left, and goes on to the back with Next, or ends with Done.
+ * first, with the corners kept. The images of a scan ([scan]) have the first step alone, one after
+ * another, with Next on each: Back goes to the image before (which comes back from the other side),
+ * a photo can be discarded and images picked left as they are; while the next is awaited the screen
+ * says so. An ID card's side says which side it is, and speaks of the card; one the ID card flow is
+ * adding is discarded when left, and goes on to the back with Next, or ends with Done.
  * What the steps chose is kept through rotation, Android stopping Usugami, and a tool opened over
  * the screen for files shared to Usugami (UsugamiApp keeps it then).
  * [active] is false while the screen animates away: it then takes no Back. [arrived] is true once it
@@ -185,26 +194,55 @@ fun CropScreen(
     // Given to a page's screen while it animates away, as UsugamiApp does for screens.
     val idleSnackbar = remember { SnackbarHostState() }
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
-    AnimatedContent(
-        targetState = session,
+    // Where among the scan's images the page showing (or awaited) is, so the image before comes back
+    // from the other side.
+    val place = when {
+        scan == null -> 0
+        session?.staged == true -> scan.pages.indexOf(session.itemId) + 1
+        else -> scan.place
+    }
+    // A scan's image is one screen while it is awaited and once it shows: its page found comes in
+    // place of the wait, and only the next image (or the one before) slides. So does the place of an
+    // image picked that is still being added. Any other opening is a screen of its own.
+    val key: Any? = when {
+        session?.staged == true -> ScanImage(session.itemId)
+        session == null && scan != null -> scan.waiting.firstOrNull()?.let(::ScanImage) ?: ScanPlace(place)
+        else -> session?.opened
+    }
+    val pages = updateTransition(CropPage(key, place), label = "crop page")
+    pages.AnimatedContent(
         modifier = Modifier.background(Usugami.colors.screenDim),
-        // Each opening is a screen of its own: one image of a scan slides away as the next comes.
-        contentKey = { it?.opened },
-        transitionSpec = { Motion.screenTransition(forward = true, rtl = rtl) },
-        label = "crop page",
-    ) { shown ->
+        contentKey = { it.key },
+        // A later image lies over the one before: it slides in over it, and slides away from it on Back.
+        // The image awaited in its place takes it without a slide.
+        transitionSpec = {
+            if (initialState.awaits(targetState)) {
+                EnterTransition.None togetherWith ExitTransition.None
+            } else {
+                Motion.screenTransition(forward = targetState.place >= initialState.place, depth = targetState.place, rtl = rtl)
+            }
+        },
+    ) { page ->
         val live = active && transition.targetState == EnterExitState.Visible
+        // What it shows while it is the screen showing, and still as it goes.
+        val shown = freezeWhen(!live, session)
+        val item = freezeWhen(!live, items.firstOrNull { it.id == ((page.key as? ScanImage)?.id ?: shown?.itemId) })
+        // The image read while its page is still looked for: a scan's image then shows with it at once.
+        val photo by rememberUpright(item?.source)
+        val read = photo?.takeIf { it.path == item?.source?.path }
         val settled = arrived && live && transition.currentState == EnterExitState.Visible
-        val away = slideInProgress()
+        val cameOver = remember { pages.segment.let { !it.initialState.awaits(it.targetState) && it.targetState.place >= it.initialState.place } }
+        val away = slideInProgress(cameOver)
         Inert(!live, slide = Modifier.screenSlide(away, rtl)) {
             val messages = if (live) snackbar else idleSnackbar
-            if (shown == null) {
-                ScanWaiting(freezeWhen(!live, scan), live, messages, actions.close)
+            if (shown == null || (shown.staged && item != null && read == null)) {
+                ScanWaiting(freezeWhen(!live, scan), live, messages, actions)
             } else {
-                val shownScan = freezeWhen(!live, scan)?.takeIf { shown.queued }
+                val shownScan = freezeWhen(!live, scan)?.takeIf { shown.staged }
                 CropSteps(
                     session = shown,
-                    item = items.firstOrNull { it.id == shown.itemId },
+                    item = item?.takeIf { it.id == shown.itemId },
+                    photo = read?.bitmap,
                     // The images of the scan still being added are pages too: Apply to all pages reaches them.
                     pageCount = items.size + (shownScan?.coming ?: 0),
                     scan = shownScan,
@@ -227,6 +265,7 @@ fun CropScreen(
 private fun CropSteps(
     session: CropSession,
     item: ImageItem?,
+    photo: Bitmap?,
     pageCount: Int,
     scan: ScanQueue?,
     live: Boolean,
@@ -239,16 +278,14 @@ private fun CropSteps(
         CropState(session.shown(session.start), session.rotation, session.look, session.adjustments)
     }
     val source = item?.source
-    val window = LocalWindowInfo.current.containerSize
-    val previewSide = min(PREVIEW_MAX, max(window.width, window.height))
-    // The image upright, read once: the steps show it turned as the page is.
-    val photo by produceState<Bitmap?>(null, source?.path) {
-        val shown = source ?: return@produceState
-        value = withContext(Dispatchers.IO) {
-            runCatching { PageCropper.upright(shown, 0, previewSide) }.getOrNull()
+    BackHandler(enabled = live) {
+        when {
+            // A scan's image: the image before, or out of cropping on the first.
+            session.staged -> actions.back()
+            state.step == CropStep.FILTERS -> state.step = CropStep.CROP
+            else -> actions.close()
         }
     }
-    BackHandler(enabled = live) { if (state.step == CropStep.FILTERS) state.step = CropStep.CROP else actions.close() }
     fun choices() = CropChoices(state.corners, state.rotation, state.look, state.adjustments, state.allPages && pageCount > 1)
     fun turn(degrees: Int) = state.turn(degrees, source?.uprightWidth ?: 1, source?.uprightHeight ?: 1)
     val idleSnackbar = remember { SnackbarHostState() }
@@ -285,21 +322,36 @@ private fun CropSteps(
                         title = { StepTitle(title, place) },
                         navigationIcon = {
                             when {
+                                // A scan's image: the image before.
+                                session.staged -> GlyphButton(onClick = actions.back) {
+                                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
+                                }
                                 filters -> GlyphButton(onClick = { state.step = CropStep.CROP }) {
                                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
                                 }
-                                // A photo just taken, or an ID card's side being added, goes when left.
-                                session.fromCamera || session.cardScan || session.queued -> GlyphButton(onClick = actions.close) {
-                                    val discard = session.fromCamera || session.cardScan
-                                    Icon(Icons.Rounded.Close, contentDescription = stringResource(if (discard) R.string.crop_discard else R.string.crop_stop))
+                                // An ID card's side being added goes when left.
+                                session.cardScan -> GlyphButton(onClick = actions.close) {
+                                    Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.crop_discard))
                                 }
                                 else -> GlyphButton(onClick = actions.close) {
                                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
                                 }
                             }
                         },
-                        // Rotate left and right: a quarter turn of the image, and of the page with it.
                         actions = {
+                            // A scan's photo can be discarded, and the rest of the images picked left as they are.
+                            if (session.staged) {
+                                if (session.fromCamera) {
+                                    GlyphButton(onClick = actions.discard) {
+                                        Icon(Icons.Rounded.Delete, contentDescription = stringResource(R.string.crop_discard))
+                                    }
+                                } else {
+                                    GlyphButton(onClick = actions.stop) {
+                                        Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.crop_stop))
+                                    }
+                                }
+                            }
+                            // Rotate left and right: a quarter turn of the image, and of the page with it.
                             GlyphButton(onClick = { turn(-90) }) {
                                 TurnIcon(clockwise = false, description = stringResource(R.string.crop_rotate_left))
                             }
@@ -315,7 +367,8 @@ private fun CropSteps(
             ) { padding ->
                 Box(Modifier.padding(padding)) {
                     if (!filters) {
-                        CornersStep(session, source, photo, state, onNext = { state.step = CropStep.FILTERS })
+                        // A scan's image has its corners alone: Next gives them to it, and the scan goes on.
+                        CornersStep(session, source, photo, state, onNext = { if (session.staged) actions.done(choices()) else state.step = CropStep.FILTERS })
                     } else {
                         FilterStep(
                             photo = photo,
@@ -334,14 +387,6 @@ private fun CropSteps(
                                     session.cardScan && session.side == CardSide.FRONT -> StepButtons(
                                         StepButton(R.string.crop_next, Icons.AutoMirrored.Rounded.ArrowForward, iconAfter = true) { actions.done(choices()) },
                                     )
-                                    session.cardScan -> StepButtons(StepButton(R.string.crop_done, Icons.Rounded.Check) { actions.done(choices()) })
-                                    session.fromCamera -> StepButtons(
-                                        main = StepButton(R.string.crop_done, Icons.Rounded.Check) { actions.done(choices()) },
-                                        other = StepButton(R.string.crop_take_another, Icons.Rounded.PhotoCamera) { actions.takeAnother(choices()) },
-                                    )
-                                    scan != null && !scan.isLast -> StepButtons(
-                                        StepButton(R.string.crop_next, Icons.AutoMirrored.Rounded.ArrowForward, iconAfter = true) { actions.done(choices()) },
-                                    )
                                     else -> StepButtons(StepButton(R.string.crop_done, Icons.Rounded.Check) { actions.done(choices()) })
                                 }
                             },
@@ -357,11 +402,44 @@ private fun CropSteps(
 private enum class CropStep { CROP, FILTERS }
 
 /**
- * A step's title, and under it [place]: for an image of a scan, which of its images this is; for an
- * ID card's side, which side.
+ * [source] upright, read once in the background at the size the crop screen shows it (the steps show
+ * it turned as the page is): null until it has been read, then with its bitmap, null if it couldn't be.
  */
 @Composable
-private fun StepTitle(title: String, place: String?) {
+private fun rememberUpright(source: OriginalImage?): State<Upright?> {
+    val window = LocalWindowInfo.current.containerSize
+    val side = min(PREVIEW_MAX, max(window.width, window.height))
+    return produceState<Upright?>(null, source?.path) {
+        val shown = source ?: return@produceState
+        value = withContext(Dispatchers.IO) { Upright(shown.path, runCatching { PageCropper.upright(shown, 0, side) }.getOrNull()) }
+    }
+}
+
+/** The image at [path], upright, as the crop screen shows it: [bitmap], null when it couldn't be read. */
+private class Upright(val path: String, val bitmap: Bitmap?)
+
+/**
+ * Which screen the crop screen shows: [key] tells them apart (a scan's image, awaited or shown, or
+ * another page's opening), and [place] is where among the scan's images it is (0 outside a scan),
+ * which decides the side it comes in from and which lies over which.
+ */
+private data class CropPage(val key: Any?, val place: Int) {
+    /** Whether this is the place of an image still being added, and [next] that image in it. */
+    fun awaits(next: CropPage) = key is ScanPlace && next.key is ScanImage && next.place == place
+}
+
+/** A scan's image, by its id, on the crop screen. */
+private data class ScanImage(val id: Long)
+
+/** The place among a scan's images of one picked that is still being added, on the crop screen. */
+private data class ScanPlace(val place: Int)
+
+/**
+ * A step's title, and under it [place]: for an image of a scan, which of its images this is (also on
+ * the scan's Filters screen, which page shows large); for an ID card's side, which side.
+ */
+@Composable
+internal fun StepTitle(title: String, place: String?) {
     Column {
         BarTitle(title)
         if (place != null) {
@@ -377,19 +455,25 @@ private fun StepTitle(title: String, place: String?) {
 }
 
 /**
- * The crop screen while a scan waits for its next image: one still being added, or its page being
- * looked for. Closing it stops the scan.
+ * The crop screen while a scan waits for its next image: one still being added, its page being looked
+ * for or its photo read, or (gone back to) being made. Back goes back as on an image; images picked
+ * can be left as they are from here too.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ScanWaiting(scan: ScanQueue?, live: Boolean, snackbar: SnackbarHostState, onClose: () -> Unit) {
-    BackHandler(enabled = live, onBack = onClose)
+private fun ScanWaiting(scan: ScanQueue?, live: Boolean, snackbar: SnackbarHostState, actions: CropActions) {
+    BackHandler(enabled = live, onBack = actions.back)
     Scaffold(
         topBar = {
             UsugamiTopBar(
                 title = { StepTitle(stringResource(R.string.crop_title), scan?.let { stringResource(R.string.scan_place, it.place, it.total) }) },
                 navigationIcon = {
-                    GlyphButton(onClick = onClose) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.crop_stop)) }
+                    GlyphButton(onClick = actions.back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back)) }
+                },
+                actions = {
+                    if (scan != null && !scan.camera) {
+                        GlyphButton(onClick = actions.stop) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.crop_stop)) }
+                    }
                 },
                 line = BarLine.Never,
                 subtitle = true,
@@ -542,18 +626,20 @@ private fun CornersStep(session: CropSession, source: OriginalImage?, photo: Bit
             )
             val notAPage = stringResource(if (card) R.string.card_crop_not_a_card else R.string.crop_not_a_page)
             val align = if (wide) TextAlign.Start else TextAlign.Center
+            // In lines of about the same length, rather than a last word alone, as the scan's Photos hint.
+            val style = MaterialTheme.typography.bodyMedium.copy(lineBreak = LineBreak.Heading)
             // As tall as the longer of its two texts, whichever shows: the image below stays
             // where it is when they change places under a corner being dragged.
             Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                 Text(
                     if (usable) notAPage else page,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = style,
                     textAlign = align,
                     modifier = Modifier.fillMaxWidth().alpha(0f).clearAndSetSemantics {},
                 )
                 Text(
                     if (usable) page else notAPage,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = style,
                     color = if (usable) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                     textAlign = align,
                     modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },

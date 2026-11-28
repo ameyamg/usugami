@@ -27,8 +27,8 @@ android {
         minSdk = 26
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 22
-        versionName = "3.0.2"
+        versionCode = 23
+        versionName = "4.0.0"
     }
 
     signingConfigs {
@@ -61,6 +61,8 @@ android {
             isDefault = true
             buildConfigField("String", "EDITION", "\"standard\"")
             buildConfigField("boolean", "HAS_OCR", "true")
+            // Translate PDF (Google ML Kit): the standard edition only.
+            buildConfigField("boolean", "HAS_TRANSLATION", "true")
             proguardFile("proguard-standard.pro")
             // ML Kit pulls in AppCompat, whose own keep rule for SearchView would keep ~200 KB of
             // unused AppCompat code and resources. The app is pure Compose and never uses it.
@@ -71,11 +73,13 @@ android {
             applicationIdSuffix = ".lite"
             buildConfigField("String", "EDITION", "\"lite\"")
             buildConfigField("boolean", "HAS_OCR", "false")
+            buildConfigField("boolean", "HAS_TRANSLATION", "false")
         }
         create("ocr") {
             dimension = "edition"
             buildConfigField("String", "EDITION", "\"ocr\"")
             buildConfigField("boolean", "HAS_OCR", "true")
+            buildConfigField("boolean", "HAS_TRANSLATION", "false")
             // Phones are ARM; x86_64 is only for emulators, and release builds leave it out (below).
             ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
         }
@@ -144,9 +148,18 @@ dependencies {
         exclude(group = "org.bouncycastle")
     }
     // Only the standard edition has Google libraries: ML Kit's text recognition, whose models
-    // Google Play services downloads.
+    // Google Play services downloads, and for Translate PDF ML Kit's translation, which downloads
+    // each language's pack itself, and its language identification, which is built in.
     "standardImplementation"("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     "standardImplementation"("com.google.android.gms:play-services-mlkit-text-recognition-devanagari:16.0.1")
+    // F-Droid's recipes delete Google's dependency lines with sed. Copies of the recipes made before
+    // 4.0.0 only delete the lines that name Play services' Maven group, so each of these two names
+    // that group in a comment too.
+    // ML Kit's translation brings the HTTP library OkHttp only to register itself with Google's
+    // Firebase, which Usugami's process never contacts: OkHttp is left out, and a stand-in that
+    // makes no connections takes its place (app/src/standard/java/okhttp3/OkHttp.kt).
+    "standardImplementation"("com.google.mlkit:translate:17.0.3") { exclude(group = "com.squareup.okhttp3") } // com.google.android.gms (see above)
+    "standardImplementation"("com.google.mlkit:language-id:17.0.6") // com.google.android.gms (see above)
     // Usugami OCR's built-in engine: ncnn and its JNI bridge, built from source (see :ocr-native).
     "ocrImplementation"(project(":ocr-native"))
     androidTestImplementation("androidx.test:runner:1.7.0")
@@ -255,5 +268,13 @@ androidComponents {
     // them for testing.
     onVariants(selector().withFlavor("edition" to "ocr").withBuildType("release")) { variant ->
         variant.packaging.jniLibs.excludes.addAll("lib/x86/**", "lib/x86_64/**")
+    }
+    // The same for Usugami's translating (ML Kit's translation and language identification). Its native
+    // code is 29 MB stored as it is; kept compressed in the APK it is 14 MB, which the phone unpacks
+    // once when it installs the app: the APK is 19 MB instead of 35 MB, for about 1 MB more room on
+    // the phone.
+    onVariants(selector().withFlavor("edition" to "standard").withBuildType("release")) { variant ->
+        variant.packaging.jniLibs.excludes.addAll("lib/x86/**", "lib/x86_64/**")
+        variant.packaging.jniLibs.useLegacyPackaging.set(true)
     }
 }

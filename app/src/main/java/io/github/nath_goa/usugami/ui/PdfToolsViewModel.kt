@@ -101,13 +101,16 @@ import java.util.concurrent.ConcurrentHashMap
  * DOCUMENT_INFO shows and changes a PDF's title, author and the like; each lives in files of its own
  * (see [ToolAction]). READER opens a PDF to read: its pages in one scroll, text to find, select and
  * copy, and, in Annotate (Edit PDF until 2.0.0), text, drawings, shapes and pictures put on its pages.
- * It has a screen of its own (ReaderScreen).
+ * It has a screen of its own (ReaderScreen). TRANSLATE makes a new PDF of a PDF's pages with their
+ * text in another language; only the standard edition has it (see translationAvailable), and it
+ * lives in that edition's files.
  */
 enum class PdfTool {
     SPLIT, MERGE, COMPRESS, PAGE_NUMBERS, WATERMARK, SIGN, WORD, POWERPOINT, EPUB,
     REORGANIZE, FLATTEN, REDACT, EXCEL,
     PDF_TO_IMAGES_OR_TEXT, PAGE_LAYOUT, DOCUMENT_INFO,
     READER,
+    TRANSLATE,
 }
 
 /**
@@ -152,7 +155,9 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     internal val documentInfo = DocumentInfoState(handle)
     /** The reader's PDF as it shows (see ReaderState): given the view model too, which it uses only once it is built. */
     internal val reader = ReaderState(this, handle)
-    private val ownStates: List<ToolState> = listOf(fromPdf, pageLayout, documentInfo, reader)
+    /** Translate PDF's, in every edition: only the standard edition's screens use it. */
+    internal val translate = TranslateState(handle)
+    private val ownStates: List<ToolState> = listOf(fromPdf, pageLayout, documentInfo, reader, translate)
 
     private val pictures = PagePictures(app)
     private val history = EditHistory(handle)
@@ -965,11 +970,14 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
     private fun forgetInputs(missing: List<PdfInput>) {
         val ids = missing.mapTo(HashSet()) { it.id }
         // Only with the PDF previewed: Add watermark previews the first of its PDFs. A result showing
-        // keeps its notes (PDF to images or text's): they belong to what was made, not to the PDF.
+        // keeps its notes (PDF to images or text's, Translate PDF's): they belong to what was made,
+        // not to the PDF.
         if (inputs.value.firstOrNull()?.id in ids) {
             val notes = fromPdf.notes.value.takeIf { _result.value != null }
+            val translated = translate.notes.value.takeIf { _result.value != null }
             clearWork()
             fromPdf.setNotes(notes)
+            translate.setNotes(translated)
         }
         setInputs(inputs.value.filterNot { it.id in ids })
         setPages(pages.value.filterNot { it.inputId in ids })
@@ -2380,6 +2388,7 @@ class PdfToolsViewModel(private val app: Application, private val handle: SavedS
             PdfTool.PAGE_LAYOUT -> named("_layout")
             PdfTool.DOCUMENT_INFO -> named("_info")
             PdfTool.READER -> named("_annotated")
+            PdfTool.TRANSLATE -> named("_translated")
         }
     }
 

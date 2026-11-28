@@ -80,6 +80,9 @@ internal object Redactor {
     /** How far, in points, something may reach past the edge of a page and still count as shown on it. */
     private const val SLACK = 1f
 
+    /** A glyph whose line rises or falls more than this for each point it runs (about 10 degrees) isn't level (see [GlyphBox.level]). */
+    private const val LEVEL_SLOPE = 0.18f
+
     /** Annotation flags (/F): hidden, and not shown on the screen (though perhaps printed). */
     private const val HIDDEN = 1 shl 1
     private const val NO_VIEW = 1 shl 5
@@ -653,13 +656,14 @@ internal object Redactor {
             ascent = extent.first
             descent = extent.second
         }
+        fun shown(x: Float, y: Float): Pair<Float, Float> {
+            val (shownX, shownY) = frame.toShown(x + frame.left, y + frame.bottom)
+            return shownX to frame.shownHeight - shownY
+        }
         val points = listOf(
             startX + upX * descent to startY + upY * descent, endX + upX * descent to endY + upY * descent,
             startX + upX * ascent to startY + upY * ascent, endX + upX * ascent to endY + upY * ascent,
-        ).map { (x, y) ->
-            val (shownX, shownY) = frame.toShown(x + frame.left, y + frame.bottom)
-            shownX to frame.shownHeight - shownY
-        }
+        ).map { (x, y) -> shown(x, y) }
         if (points.any { !it.first.isFinite() || !it.second.isFinite() }) return null
         // Whether the line runs across the page as shown, from the direction of the advance (or of "up").
         val (startShownX, startShownY) = points[0]
@@ -673,8 +677,25 @@ internal object Redactor {
             dx != 0f || dy != 0f -> abs(dx) >= abs(dy)
             else -> abs(topShownY - startShownY) >= abs(topShownX - startShownX)
         }
-        return GlyphBox(points.minOf { it.first }, points.minOf { it.second }, points.maxOf { it.first }, points.maxOf { it.second }, across)
+        // Whether it also runs left to right and level, from its text's own baseline (a slanted "up", as
+        // synthetic italics have, doesn't count), or without one from its advance: not tilted, not upside
+        // down. Not from the advance first: text extraction's start is raised by a text rise (a
+        // superscript set with Ts) and its end isn't, so a narrow raised digit's advance looks steep.
+        val (baseX, baseY) = shown(startX + trm.scaleX, startY + trm.shearY)
+        val (originX, originY) = shown(startX, startY)
+        val bx = baseX - originX
+        val by = baseY - originY
+        val level = when {
+            vertical -> across
+            bx.isFinite() && by.isFinite() && (bx != 0f || by != 0f) -> isLevel(bx, by)
+            dx != 0f || dy != 0f -> across && isLevel(dx, dy)
+            else -> across
+        }
+        return GlyphBox(points.minOf { it.first }, points.minOf { it.second }, points.maxOf { it.first }, points.maxOf { it.second }, across, level)
     }
+
+    /** Whether a line running [dx], [dy] on the page as shown (y down) runs left to right within [LEVEL_SLOPE] of level. */
+    private fun isLevel(dx: Float, dy: Float): Boolean = dx > 0f && abs(dy) <= LEVEL_SLOPE * dx
 
     /**
      * How far the glyph's font reaches above and below the baseline, in text space (ems): the higher
@@ -868,7 +889,7 @@ internal object Redactor {
      * The picture as a PDF image: lossless, in grey when it has no colour, unless a JPEG is much
      * smaller (a photo or a scan), which then stands in at high quality.
      */
-    private fun encode(doc: PDDocument, bitmap: Bitmap, check: () -> Unit): PDImageXObject {
+    internal fun encode(doc: PDDocument, bitmap: Bitmap, check: () -> Unit): PDImageXObject {
         val width = bitmap.width
         val height = bitmap.height
         val jpeg = ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }.toByteArray()

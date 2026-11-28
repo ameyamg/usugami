@@ -2,12 +2,30 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+        INTERNET and ACCESS_NETWORK_STATE come from ML Kit's translation library, which downloads a
+        language's pack the first time Translate PDF needs it. Usugami itself never opens a
+        connection; it only asks Android, around such a download, whether the phone is online. The
+        other two editions have neither permission.
+    -->
+
     <!-- Only the standard edition has ML Kit; in the others this would add a service that doesn't exist. -->
     <application>
         <!--
-            ML Kit includes Google's usage-metrics uploader. The app has no internet permission, so
-            it could never send anything, but it would still queue events in a local database (up to
-            10 MB). Removing its only backend makes it drop events immediately instead.
+            Makes every http, https and ftp URL fail to open in Usugami's process from the moment it
+            starts, so that ML Kit can't fetch its settings from Google's Firebase (see
+            NoConnections.kt). It runs before ML Kit's own provider (initOrder 99).
+        -->
+        <provider
+            android:name="io.github.nath_goa.usugami.data.NoConnectionsProvider"
+            android:authorities="${applicationId}.no-connections"
+            android:exported="false"
+            android:initOrder="100" />
+
+        <!--
+            ML Kit includes Google's usage-metrics uploader, which keeps events in a local database
+            (up to 10 MB) and, now that this edition may go online, would send them to Google.
+            Removing its only backend makes it drop them at once instead.
         -->
         <service
             android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
